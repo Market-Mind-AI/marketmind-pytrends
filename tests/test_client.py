@@ -40,7 +40,7 @@ class TestPyTrendsClient:
         mock_trend_req.return_value = mock_session
 
         client = PyTrendsClient()
-        fn = client.interest_over_time
+        fn = client._interest_over_time_pytrends
         fn.retry.wait = fn.retry.wait.__class__(0)  # type: ignore[union-attr]
         with pytest.raises(PyTrendsTimeoutError):
             client.interest_over_time("test", "US", "today 12-m", "en-US")
@@ -67,7 +67,7 @@ class TestPyTrendsClient:
         mock_trend_req.return_value = mock_session
 
         client = PyTrendsClient()
-        fn = client.interest_over_time
+        fn = client._interest_over_time_pytrends
         fn.retry.wait = fn.retry.wait.__class__(0)  # type: ignore[union-attr]
         with pytest.raises(PyTrendsRateLimitError, match="Rate limited"):
             client.interest_over_time("test", "US", "today 12-m", "en-US")
@@ -111,3 +111,45 @@ class TestPyTrendsClient:
         assert "children" in data
         assert len(data["children"]) == 1
         assert payload["language"] == "en-US"
+
+
+class TestDataForSEOFallback:
+    """DataForSEO is only wired in as a fallback (app/clients/dataforseo_client.py)
+    — these tests isolate the fallback-triggering logic in PyTrendsClient
+    itself, not the DataForSEO SDK call (see test_dataforseo_client.py for
+    that). Patching the private *_pytrends method directly bypasses
+    RETRY_DECORATOR entirely, which is already covered by the retry tests
+    above."""
+
+    def test_no_fallback_configured_propagates_error(self) -> None:
+        client = PyTrendsClient()
+        assert client._dataforseo is None  # default settings: no DATAFORSEO_LOGIN/PASSWORD
+        client._interest_over_time_pytrends = MagicMock(side_effect=PyTrendsRateLimitError("rate limited"))  # type: ignore[method-assign]
+
+        with pytest.raises(PyTrendsRateLimitError):
+            client.interest_over_time("test", "US", "today 12-m", "en-US")
+
+    def test_falls_back_to_dataforseo_when_configured(self) -> None:
+        client = PyTrendsClient()
+        client._interest_over_time_pytrends = MagicMock(side_effect=PyTrendsRateLimitError("rate limited"))  # type: ignore[method-assign]
+        mock_dataforseo = MagicMock()
+        expected = (pd.DataFrame({"test": [10]}), {"provider": "dataforseo_fallback"})
+        mock_dataforseo.interest_over_time.return_value = expected
+        client._dataforseo = mock_dataforseo
+
+        df, payload = client.interest_over_time("test", "US", "today 12-m", "en-US")
+
+        assert payload["provider"] == "dataforseo_fallback"
+        mock_dataforseo.interest_over_time.assert_called_once_with("test", "US", "today 12-m", "en-US")
+
+    def test_dataforseo_not_triggered_on_success(self) -> None:
+        client = PyTrendsClient()
+        expected = (pd.DataFrame({"test": [10]}), {"provider": "pytrends"})
+        client._interest_over_time_pytrends = MagicMock(return_value=expected)  # type: ignore[method-assign]
+        mock_dataforseo = MagicMock()
+        client._dataforseo = mock_dataforseo
+
+        df, payload = client.interest_over_time("test", "US", "today 12-m", "en-US")
+
+        assert payload["provider"] == "pytrends"
+        mock_dataforseo.interest_over_time.assert_not_called()

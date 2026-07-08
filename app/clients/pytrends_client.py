@@ -11,6 +11,7 @@ from tenacity import (
     wait_exponential_jitter,
 )
 
+from app.clients.dataforseo_client import DataForSEOClient
 from app.core.config import settings
 from app.core.exceptions import (
     PyTrendsClientError,
@@ -20,9 +21,16 @@ from app.core.exceptions import (
 )
 from app.core.logging import logger
 
+# PyTrends is the highest-weighted data source (Demand dimension) — a
+# transient Google Trends rate limit must not silently degrade the MOS.
+# See app/core/config.py trends_rate_limit_* for the persistence rationale.
 RETRY_DECORATOR = retry(
-    stop=stop_after_attempt(5),
-    wait=wait_exponential_jitter(initial=10, max=120, jitter=5),
+    stop=stop_after_attempt(settings.trends_rate_limit_max_attempts),
+    wait=wait_exponential_jitter(
+        initial=settings.trends_rate_limit_initial_wait_seconds,
+        max=settings.trends_rate_limit_max_wait_seconds,
+        jitter=settings.trends_rate_limit_jitter_seconds,
+    ),
     retry=retry_if_exception_type((Timeout, RequestsConnectionError, PyTrendsTimeoutError, PyTrendsRateLimitError)),
     reraise=True,
 )
@@ -43,6 +51,10 @@ class PyTrendsClient:
         self._retries = settings.default_retries
         self._backoff = settings.default_backoff
         self._tz = settings.default_tz
+        # Resilience fallback (2026-07-08) — only active once real
+        # credentials are configured; empty login/password means this stays
+        # None and every method behaves exactly as before it existed.
+        self._dataforseo = DataForSEOClient() if settings.dataforseo_login and settings.dataforseo_password else None
 
     def _create_session(self, language: str) -> TrendReq:
         return TrendReq(
@@ -55,7 +67,7 @@ class PyTrendsClient:
         )
 
     @RETRY_DECORATOR
-    def interest_over_time(
+    def _interest_over_time_pytrends(
         self, keyword: str, country: str, timeframe: str, language: str
     ) -> tuple[pd.DataFrame, dict[str, Any]]:
         try:
@@ -68,6 +80,7 @@ class PyTrendsClient:
                 "country": country,
                 "timeframe": timeframe,
                 "language": language,
+                "provider": "pytrends",
             }
 
             if df.empty:
@@ -85,8 +98,22 @@ class PyTrendsClient:
             _handle_error("interest_over_time", keyword, e)
             raise  # unreachable, satisfies type checker
 
+    def interest_over_time(
+        self, keyword: str, country: str, timeframe: str, language: str
+    ) -> tuple[pd.DataFrame, dict[str, Any]]:
+        try:
+            return self._interest_over_time_pytrends(keyword, country, timeframe, language)
+        except (PyTrendsRateLimitError, PyTrendsTimeoutError) as e:
+            if self._dataforseo is None:
+                raise
+            logger.warning(
+                f"PyTrends exhausted retries for interest_over_time (keyword={keyword}): {e}. "
+                "Falling back to DataForSEO."
+            )
+            return self._dataforseo.interest_over_time(keyword, country, timeframe, language)
+
     @RETRY_DECORATOR
-    def interest_by_region(
+    def _interest_by_region_pytrends(
         self, keyword: str, country: str, timeframe: str, language: str
     ) -> tuple[pd.DataFrame, dict[str, Any]]:
         try:
@@ -99,6 +126,7 @@ class PyTrendsClient:
                 "country": country,
                 "timeframe": timeframe,
                 "language": language,
+                "provider": "pytrends",
             }
 
             if df.empty:
@@ -116,8 +144,22 @@ class PyTrendsClient:
             _handle_error("interest_by_region", keyword, e)
             raise
 
+    def interest_by_region(
+        self, keyword: str, country: str, timeframe: str, language: str
+    ) -> tuple[pd.DataFrame, dict[str, Any]]:
+        try:
+            return self._interest_by_region_pytrends(keyword, country, timeframe, language)
+        except (PyTrendsRateLimitError, PyTrendsTimeoutError) as e:
+            if self._dataforseo is None:
+                raise
+            logger.warning(
+                f"PyTrends exhausted retries for interest_by_region (keyword={keyword}): {e}. "
+                "Falling back to DataForSEO."
+            )
+            return self._dataforseo.interest_by_region(keyword, country, timeframe, language)
+
     @RETRY_DECORATOR
-    def related_queries(
+    def _related_queries_pytrends(
         self, keyword: str, country: str, timeframe: str, language: str
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         try:
@@ -130,6 +172,7 @@ class PyTrendsClient:
                 "country": country,
                 "timeframe": timeframe,
                 "language": language,
+                "provider": "pytrends",
             }
 
             return data, request_payload
@@ -143,6 +186,20 @@ class PyTrendsClient:
         except Exception as e:
             _handle_error("related_queries", keyword, e)
             raise
+
+    def related_queries(
+        self, keyword: str, country: str, timeframe: str, language: str
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        try:
+            return self._related_queries_pytrends(keyword, country, timeframe, language)
+        except (PyTrendsRateLimitError, PyTrendsTimeoutError) as e:
+            if self._dataforseo is None:
+                raise
+            logger.warning(
+                f"PyTrends exhausted retries for related_queries (keyword={keyword}): {e}. "
+                "Falling back to DataForSEO."
+            )
+            return self._dataforseo.related_queries(keyword, country, timeframe, language)
 
     @RETRY_DECORATOR
     def related_topics(
