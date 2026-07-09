@@ -103,6 +103,33 @@ class TestDataForSEOClientExplore:
 
     @patch("app.clients.dataforseo_client.KeywordsDataApi")
     @patch("app.clients.dataforseo_client.dfs_api_provider.ApiClient")
+    def test_null_region_value_becomes_zero_not_nan(
+        self, mock_api_client_cls: MagicMock, mock_keywords_api_cls: MagicMock
+    ) -> None:
+        # DataForSEO reports no-data regions (e.g. Ceuta) with a null value;
+        # it must become 0.0, never NaN — a NaN later fails JSON persistence
+        # ("invalid input syntax for type json: Token NaN"). Regression test
+        # for the live-mode bug found 2026-07-09.
+        map_item = GoogleTrendsGoogleTrendsMapElementItem(
+            type="google_trends_map",
+            data=[
+                TrendsMapDataInfo(geo_id="ES-EX", geo_name="Extremadura", values=[100.0]),
+                TrendsMapDataInfo(geo_id="ES-CE", geo_name="Ceuta", values=[None]),
+            ],
+        )
+        mock_api = MagicMock()
+        mock_api.google_trends_explore_live.return_value = _response_with_items([map_item])
+        mock_keywords_api_cls.return_value = mock_api
+        mock_api_client_cls.return_value.__enter__.return_value = MagicMock()
+
+        client = DataForSEOClient()
+        df, _ = client.interest_by_region("jamon iberico", "ES", "today 12-m", "es")
+
+        assert df.loc["Ceuta", "jamon iberico"] == 0.0
+        assert not df["jamon iberico"].isna().any()
+
+    @patch("app.clients.dataforseo_client.KeywordsDataApi")
+    @patch("app.clients.dataforseo_client.dfs_api_provider.ApiClient")
     def test_related_queries_success(self, mock_api_client_cls: MagicMock, mock_keywords_api_cls: MagicMock) -> None:
         queries_item = GoogleTrendsGoogleTrendsQueriesListElementItem(
             type="google_trends_queries_list",

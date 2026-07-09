@@ -40,6 +40,7 @@ class TestPyTrendsClient:
         mock_trend_req.return_value = mock_session
 
         client = PyTrendsClient()
+        client._dataforseo = None  # isolate PyTrends error behavior from the fallback (env may have creds)
         fn = client._interest_over_time_pytrends
         fn.retry.wait = fn.retry.wait.__class__(0)  # type: ignore[union-attr]
         with pytest.raises(PyTrendsTimeoutError):
@@ -67,6 +68,7 @@ class TestPyTrendsClient:
         mock_trend_req.return_value = mock_session
 
         client = PyTrendsClient()
+        client._dataforseo = None  # isolate PyTrends error behavior from the fallback (env may have creds)
         fn = client._interest_over_time_pytrends
         fn.retry.wait = fn.retry.wait.__class__(0)  # type: ignore[union-attr]
         with pytest.raises(PyTrendsRateLimitError, match="Rate limited"):
@@ -123,7 +125,7 @@ class TestDataForSEOFallback:
 
     def test_no_fallback_configured_propagates_error(self) -> None:
         client = PyTrendsClient()
-        assert client._dataforseo is None  # default settings: no DATAFORSEO_LOGIN/PASSWORD
+        client._dataforseo = None  # fallback disabled (empty DATAFORSEO_LOGIN/PASSWORD)
         client._interest_over_time_pytrends = MagicMock(side_effect=PyTrendsRateLimitError("rate limited"))  # type: ignore[method-assign]
 
         with pytest.raises(PyTrendsRateLimitError):

@@ -71,6 +71,19 @@ def _timeframe_to_date_range(timeframe: str) -> tuple[str, str]:
     return (today - timedelta(days=days)).isoformat(), today.isoformat()
 
 
+def _coerce(value: Any) -> float:
+    """DataForSEO reports regions/points with no data as null; PyTrends
+    reports them as 0 (inc_low_vol=True). Coerce null/None to 0.0 so both
+    providers produce the same shape — and so the DataFrame never carries a
+    NaN, which would later fail JSON persistence (`invalid input syntax for
+    type json: Token "NaN"`) in the raw_api_responses store."""
+    return 0.0 if value is None else float(value)
+
+
+def _first_value(values: list[Any] | None) -> float:
+    return _coerce(values[0]) if values else 0.0
+
+
 def _request_payload(keyword: str, country: str, timeframe: str, language: str) -> dict[str, Any]:
     return {
         "keyword": keyword,
@@ -143,8 +156,9 @@ class DataForSEOClient:
         for point in graph.data:
             if point is None or point.date_from is None:
                 continue
-            value = point.values[0] if point.values else 0
-            rows.append({"date": point.date_from, "value": value, "isPartial": bool(point.missing_data)})
+            rows.append(
+                {"date": point.date_from, "value": _first_value(point.values), "isPartial": bool(point.missing_data)}
+            )
         df = pd.DataFrame(rows).set_index("date").rename(columns={"value": keyword})
         df.index = pd.to_datetime(df.index)
         return df, _request_payload(keyword, country, timeframe, language)
@@ -161,8 +175,7 @@ class DataForSEOClient:
         for point in map_item.data:
             if point is None or point.geo_name is None:
                 continue
-            value = point.values[0] if point.values else 0
-            rows.append({"region": point.geo_name, "value": value})
+            rows.append({"region": point.geo_name, "value": _first_value(point.values)})
         df = pd.DataFrame(rows).set_index("region").rename(columns={"value": keyword})
         return df, _request_payload(keyword, country, timeframe, language)
 
@@ -177,11 +190,19 @@ class DataForSEOClient:
         if queries_item is not None and queries_item.data is not None:
             if queries_item.data.top:
                 top_df = pd.DataFrame(
-                    [{"query": e.get("query", ""), "value": e.get("value")} for e in queries_item.data.top if e]
+                    [
+                        {"query": e.get("query", ""), "value": _coerce(e.get("value"))}
+                        for e in queries_item.data.top
+                        if e
+                    ]
                 )
             if queries_item.data.rising:
                 rising_df = pd.DataFrame(
-                    [{"query": e.get("query", ""), "value": e.get("value")} for e in queries_item.data.rising if e]
+                    [
+                        {"query": e.get("query", ""), "value": _coerce(e.get("value"))}
+                        for e in queries_item.data.rising
+                        if e
+                    ]
                 )
         data = {keyword: {"top": top_df, "rising": rising_df}}
         return data, _request_payload(keyword, country, timeframe, language)
