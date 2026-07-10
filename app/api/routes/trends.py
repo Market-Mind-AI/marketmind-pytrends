@@ -9,11 +9,12 @@ from app.core.exceptions import (
     PyTrendsRateLimitError,
     PyTrendsTimeoutError,
 )
-from app.schemas.requests import SuggestionRequest, TrendingRssRequest, TrendRequest
+from app.schemas.requests import SuggestionRequest, TrendingRssRequest, TrendRequest, WorldwideTrendRequest
 from app.schemas.responses import (
     CategoriesResponse,
     ErrorResponse,
     IngestionRunResponse,
+    InterestByCountryResponse,
     InterestByRegionResponse,
     InterestOverTimeResponse,
     RelatedQueriesResponse,
@@ -63,6 +64,30 @@ async def interest_by_region(
 ) -> InterestByRegionResponse:
     try:
         return await service.collect_interest_by_region(request)
+    except PyTrendsEmptyResponseError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except PyTrendsRateLimitError as e:
+        raise HTTPException(status_code=429, detail=str(e))
+    except PyTrendsTimeoutError as e:
+        raise HTTPException(status_code=504, detail=str(e))
+    except PyTrendsClientError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@router.post(
+    "/interest-by-country",
+    response_model=InterestByCountryResponse,
+    responses={502: {"model": ErrorResponse}, 504: {"model": ErrorResponse}},
+    summary="Collect Interest By Country",
+    description="Fetches worldwide Google Trends interest broken down by country for a keyword, "
+    "normalizes and persists it.",
+)
+async def interest_by_country(
+    request: WorldwideTrendRequest,
+    service: TrendsService = Depends(get_trends_service),
+) -> InterestByCountryResponse:
+    try:
+        return await service.collect_interest_by_country(request)
     except PyTrendsEmptyResponseError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except PyTrendsRateLimitError as e:

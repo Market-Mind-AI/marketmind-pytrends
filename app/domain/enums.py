@@ -10,6 +10,7 @@ class IngestionStatus(StrEnum):
 class TrendEndpoint(StrEnum):
     INTEREST_OVER_TIME = "interest_over_time"
     INTEREST_BY_REGION = "interest_by_region"
+    INTEREST_BY_COUNTRY = "interest_by_country"
     RELATED_QUERIES = "related_queries"
     RELATED_TOPICS = "related_topics"
     SUGGESTIONS = "suggestions"

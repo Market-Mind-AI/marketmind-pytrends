@@ -55,6 +55,25 @@ def normalize_interest_by_region(df: pd.DataFrame, keyword: str) -> list[dict[st
     return records
 
 
+def normalize_interest_by_country(df: pd.DataFrame, keyword: str) -> list[dict[str, Any]]:
+    if df.empty:
+        return []
+
+    records: list[dict[str, Any]] = []
+    has_geo_code = "geoCode" in df.columns
+    col = keyword if keyword in df.columns else next((c for c in df.columns if c != "geoCode"), df.columns[0])
+
+    for country_name, row in df.iterrows():
+        value = _clean_value(row[col])
+        if value is None:
+            value = 0
+        geo_code = row["geoCode"] if has_geo_code else None
+        country = str(geo_code) if geo_code else str(country_name)
+        records.append({"country": country, "value": value})
+
+    return records
+
+
 def normalize_related_queries(data: dict[str, Any], keyword: str) -> dict[str, list[dict[str, Any]]]:
     result: dict[str, list[dict[str, Any]]] = {"top": [], "rising": []}
 

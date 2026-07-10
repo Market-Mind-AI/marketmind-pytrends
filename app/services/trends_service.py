@@ -6,6 +6,7 @@ from app.clients.pytrends_client import PyTrendsClient
 from app.core.logging import logger
 from app.domain.enums import IngestionStatus, TrendEndpoint
 from app.repositories.ingestion_run_repository import IngestionRunRepository
+from app.repositories.interest_by_country_repository import InterestByCountryRepository
 from app.repositories.interest_by_region_repository import InterestByRegionRepository
 from app.repositories.interest_over_time_repository import InterestOverTimeRepository
 from app.repositories.raw_api_response_repository import RawApiResponseRepository
@@ -14,9 +15,12 @@ from app.repositories.related_topics_repository import RelatedTopicsRepository
 from app.repositories.suggestions_repository import SuggestionsRepository
 from app.repositories.trend_request_repository import TrendRequestRepository
 from app.repositories.trending_rss_repository import TrendingRssRepository
-from app.schemas.requests import SuggestionRequest, TrendingRssRequest, TrendRequest
+from app.schemas.requests import SuggestionRequest, TrendingRssRequest, TrendRequest, WorldwideTrendRequest
 from app.schemas.responses import (
     CategoriesResponse,
+    CountryItem,
+    InterestByCountryData,
+    InterestByCountryResponse,
     InterestByRegionData,
     InterestByRegionResponse,
     InterestOverTimeData,
@@ -41,6 +45,7 @@ from app.schemas.responses import (
 from app.utils.normalization import (
     dataframe_to_json_serializable,
     dict_with_dataframes_to_serializable,
+    normalize_interest_by_country,
     normalize_interest_by_region,
     normalize_interest_over_time,
     normalize_related_queries,
@@ -59,6 +64,7 @@ class TrendsService:
         self._raw_response_repo = RawApiResponseRepository(session)
         self._iot_repo = InterestOverTimeRepository(session)
         self._ibr_repo = InterestByRegionRepository(session)
+        self._ibc_repo = InterestByCountryRepository(session)
         self._rq_repo = RelatedQueriesRepository(session)
         self._rt_repo = RelatedTopicsRepository(session)
         self._suggestions_repo = SuggestionsRepository(session)
@@ -168,6 +174,62 @@ class TrendsService:
             )
         except Exception as e:
             await self._fail(run, endpoint, request.keyword, request.country, start, e)
+            raise
+
+    async def collect_interest_by_country(self, request: WorldwideTrendRequest) -> InterestByCountryResponse:
+        endpoint = TrendEndpoint.INTEREST_BY_COUNTRY
+        start = utc_now()
+        run = await self._ingestion_repo.create(source="google_trends", request_payload=request.model_dump())
+        trend_req = await self._trend_request_repo.create(
+            ingestion_run_id=run.id,
+            keyword=request.keyword,
+            country="WORLD",
+            endpoint=endpoint,
+            language=request.language,
+            timeframe=request.timeframe,
+        )
+        try:
+            df, req_payload = self._client.interest_by_country(
+                keyword=request.keyword,
+                timeframe=request.timeframe,
+                language=request.language,
+            )
+            await self._raw_response_repo.create(
+                trend_request_id=trend_req.id,
+                endpoint=endpoint,
+                request_payload=req_payload,
+                response_payload=dataframe_to_json_serializable(df),
+            )
+            normalized = normalize_interest_by_country(df, request.keyword)
+            await self._ibc_repo.bulk_create(
+                trend_request_id=trend_req.id,
+                keyword=request.keyword,
+                records=normalized,
+            )
+            exec_time = elapsed_ms(start)
+            await self._ingestion_repo.mark_success(run, exec_time)
+            await self._session.commit()
+            self._log_success(
+                endpoint,
+                request.keyword,
+                "WORLD",
+                run.id,
+                trend_req.id,
+                exec_time,
+                len(normalized),
+            )
+            return InterestByCountryResponse(
+                request=RequestInfo(
+                    keyword=request.keyword,
+                    country="WORLD",
+                    timeframe=request.timeframe,
+                    language=request.language,
+                ),
+                metadata=self._meta(endpoint, exec_time, len(normalized), run.id, trend_req.id),
+                data=InterestByCountryData(countries=[CountryItem(**r) for r in normalized]),
+            )
+        except Exception as e:
+            await self._fail(run, endpoint, request.keyword, "WORLD", start, e)
             raise
 
     async def collect_related_queries(self, request: TrendRequest) -> RelatedQueriesResponse:
@@ -402,6 +464,9 @@ class TrendsService:
         elif tr.endpoint == TrendEndpoint.INTEREST_BY_REGION:
             records = await self._ibr_repo.get_by_trend_request_id(trend_request_id)
             result["data"] = [{"region": r.region, "value": float(r.interest_value)} for r in records]
+        elif tr.endpoint == TrendEndpoint.INTEREST_BY_COUNTRY:
+            ibc_records = await self._ibc_repo.get_by_trend_request_id(trend_request_id)
+            result["data"] = [{"region": r.country, "value": float(r.interest_value)} for r in ibc_records]
         elif tr.endpoint == TrendEndpoint.RELATED_QUERIES:
             records = await self._rq_repo.get_by_trend_request_id(trend_request_id)
             result["data"] = [

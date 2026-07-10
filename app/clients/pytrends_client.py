@@ -159,6 +159,49 @@ class PyTrendsClient:
             return self._dataforseo.interest_by_region(keyword, country, timeframe, language)
 
     @RETRY_DECORATOR
+    def _interest_by_country_pytrends(
+        self, keyword: str, timeframe: str, language: str
+    ) -> tuple[pd.DataFrame, dict[str, Any]]:
+        try:
+            session = self._create_session(language)
+            session.build_payload([keyword], cat=0, timeframe=timeframe, geo="")
+            df = session.interest_by_region(resolution="COUNTRY", inc_low_vol=True, inc_geo_code=True)
+
+            request_payload = {
+                "keyword": keyword,
+                "timeframe": timeframe,
+                "language": language,
+                "provider": "pytrends",
+            }
+
+            if df.empty:
+                raise PyTrendsEmptyResponseError(f"No data returned for keyword '{keyword}' worldwide")
+
+            return df, request_payload
+        except Timeout as e:
+            raise PyTrendsTimeoutError(f"Timeout calling Google Trends: {e}") from e
+        except (PyTrendsEmptyResponseError, PyTrendsTimeoutError, PyTrendsRateLimitError):
+            raise
+        except (IndexError, KeyError) as e:
+            logger.warning(f"Parse error for interest_by_country: keyword={keyword}, retrying...")
+            raise PyTrendsRateLimitError(f"Rate limited (parse error): {e}") from e
+        except Exception as e:
+            _handle_error("interest_by_country", keyword, e)
+            raise
+
+    def interest_by_country(self, keyword: str, timeframe: str, language: str) -> tuple[pd.DataFrame, dict[str, Any]]:
+        try:
+            return self._interest_by_country_pytrends(keyword, timeframe, language)
+        except (PyTrendsRateLimitError, PyTrendsTimeoutError) as e:
+            if self._dataforseo is None:
+                raise
+            logger.warning(
+                f"PyTrends exhausted retries for interest_by_country (keyword={keyword}): {e}. "
+                "Falling back to DataForSEO."
+            )
+            return self._dataforseo.interest_by_country(keyword, timeframe, language)
+
+    @RETRY_DECORATOR
     def _related_queries_pytrends(
         self, keyword: str, country: str, timeframe: str, language: str
     ) -> tuple[dict[str, Any], dict[str, Any]]:

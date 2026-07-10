@@ -26,6 +26,7 @@ class TrendRequest(Base):
     raw_api_responses: Mapped[list["RawApiResponse"]] = relationship(back_populates="trend_request")  # type: ignore[name-defined]  # noqa: F821
     interest_over_time_records: Mapped[list["InterestOverTime"]] = relationship(back_populates="trend_request")  # type: ignore[name-defined]  # noqa: F821
     interest_by_region_records: Mapped[list["InterestByRegion"]] = relationship(back_populates="trend_request")  # type: ignore[name-defined]  # noqa: F821
+    interest_by_country_records: Mapped[list["InterestByCountry"]] = relationship(back_populates="trend_request")  # type: ignore[name-defined]  # noqa: F821
     related_queries: Mapped[list["RelatedQuery"]] = relationship(back_populates="trend_request")  # type: ignore[name-defined]  # noqa: F821
     related_topics: Mapped[list["RelatedTopic"]] = relationship(back_populates="trend_request")  # type: ignore[name-defined]  # noqa: F821
     suggestions: Mapped[list["Suggestion"]] = relationship(back_populates="trend_request")  # type: ignore[name-defined]  # noqa: F821

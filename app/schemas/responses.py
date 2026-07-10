@@ -83,6 +83,21 @@ class InterestByRegionResponse(BaseModel):
     data: InterestByRegionData
 
 
+class CountryItem(BaseModel):
+    country: str
+    value: int | float
+
+
+class InterestByCountryData(BaseModel):
+    countries: list[CountryItem]
+
+
+class InterestByCountryResponse(BaseModel):
+    request: RequestInfo
+    metadata: Metadata
+    data: InterestByCountryData
+
+
 class QueryItem(BaseModel):
     query: str
     value: int | float | None = None

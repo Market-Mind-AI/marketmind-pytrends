@@ -144,6 +144,67 @@ class DataForSEOClient:
             raise DataForSEOClientError(f"DataForSEO returned no result for keyword '{keyword}' in '{country}'")
         return list(task.result[0].items or []) if task.result[0] is not None else []
 
+    def _explore_worldwide(self, keyword: str, timeframe: str) -> list[Any]:
+        """Worldwide variant of `_explore` — omits location_name entirely, so
+        DataForSEO returns global (unrestricted) Google Trends data. Best-effort:
+        if the API rejects a location-less request or returns nothing, the caller
+        surfaces a DataForSEOClientError (the indicator is treated as unavailable
+        rather than fabricated)."""
+        date_from, date_to = _timeframe_to_date_range(timeframe)
+        host = _SANDBOX_HOST if settings.dataforseo_use_sandbox else None
+        configuration = dfs_config.Configuration(
+            username=settings.dataforseo_login, password=settings.dataforseo_password, host=host
+        )
+        try:
+            with dfs_api_provider.ApiClient(configuration) as api_client:
+                api = KeywordsDataApi(api_client)
+                response = api.google_trends_explore_live(
+                    [
+                        KeywordsDataGoogleTrendsExploreLiveRequestInfo(
+                            keywords=[keyword],
+                            date_from=date_from,
+                            date_to=date_to,
+                            item_types=["google_trends_map"],
+                        )
+                    ]
+                )
+        except ApiException as exc:
+            raise DataForSEOClientError(f"DataForSEO API error for keyword '{keyword}' worldwide: {exc}") from exc
+
+        tasks = response.tasks or []
+        if not tasks:
+            raise DataForSEOClientError(f"DataForSEO returned no tasks for keyword '{keyword}' worldwide")
+        task = tasks[0]
+        if task is None:
+            raise DataForSEOClientError(f"DataForSEO returned an empty task for keyword '{keyword}' worldwide")
+        if task.status_code is not None and task.status_code >= _TASK_ERROR_THRESHOLD:
+            raise DataForSEOClientError(f"DataForSEO task failed ({task.status_code}): {task.status_message}")
+        if not task.result:
+            raise DataForSEOClientError(f"DataForSEO returned no result for keyword '{keyword}' worldwide")
+        return list(task.result[0].items or []) if task.result[0] is not None else []
+
+    def _worldwide_request_payload(self, keyword: str, timeframe: str, language: str) -> dict[str, Any]:
+        return {
+            "keyword": keyword,
+            "timeframe": timeframe,
+            "language": language,
+            "provider": "dataforseo_fallback",
+        }
+
+    def interest_by_country(self, keyword: str, timeframe: str, language: str) -> tuple[pd.DataFrame, dict[str, Any]]:
+        items = self._explore_worldwide(keyword, timeframe)
+        map_item = next((i for i in items if isinstance(i, GoogleTrendsGoogleTrendsMapElementItem)), None)
+        if map_item is None or not map_item.data:
+            raise DataForSEOClientError(f"DataForSEO returned no worldwide interest-by-country data for '{keyword}'")
+
+        rows: list[dict[str, Any]] = []
+        for point in map_item.data:
+            if point is None or point.geo_name is None:
+                continue
+            rows.append({"country": point.geo_name, "geoCode": point.geo_id, "value": _first_value(point.values)})
+        df = pd.DataFrame(rows).set_index("country").rename(columns={"value": keyword})
+        return df, self._worldwide_request_payload(keyword, timeframe, language)
+
     def interest_over_time(
         self, keyword: str, country: str, timeframe: str, language: str
     ) -> tuple[pd.DataFrame, dict[str, Any]]:

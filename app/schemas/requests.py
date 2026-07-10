@@ -27,6 +27,26 @@ class TrendRequest(BaseModel):
     }
 
 
+class WorldwideTrendRequest(BaseModel):
+    keyword: str = Field(..., min_length=2, description="Search keyword", examples=["air fryer"])
+    timeframe: str = Field(
+        default=settings.default_timeframe, description="Google Trends timeframe", examples=["today 12-m"]
+    )
+    language: str = Field(default=settings.default_hl, description="Language code", examples=["en-US"])
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "keyword": "air fryer",
+                    "timeframe": "today 12-m",
+                    "language": "en-US",
+                }
+            ]
+        }
+    }
+
+
 class TrendingRssRequest(BaseModel):
     geo: str = Field(
         ..., min_length=2, max_length=2, pattern=r"^[A-Z]{2}$", description="ISO-2 country code", examples=["US"]
