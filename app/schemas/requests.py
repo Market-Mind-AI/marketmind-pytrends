@@ -27,8 +27,23 @@ class TrendRequest(BaseModel):
     }
 
 
+class LocalizedTerm(BaseModel):
+    term: str = Field(..., min_length=1, description="Localized search term", examples=["jamón ibérico"])
+    language: str = Field(..., min_length=2, description="Language code of the term", examples=["es"])
+
+    model_config = {"json_schema_extra": {"examples": [{"term": "jamón ibérico", "language": "es"}]}}
+
+
 class WorldwideTrendRequest(BaseModel):
-    keyword: str = Field(..., min_length=2, description="Search keyword", examples=["air fryer"])
+    base_keyword: str = Field(
+        ..., min_length=2, description="Base keyword grouping the localized terms", examples=["iberian ham"]
+    )
+    terms: list[LocalizedTerm] = Field(
+        ...,
+        min_length=1,
+        description="Localized terms compared on a single common Google Trends axis",
+        examples=[[{"term": "jamón ibérico", "language": "es"}, {"term": "presunto ibérico", "language": "pt"}]],
+    )
     timeframe: str = Field(
         default=settings.default_timeframe, description="Google Trends timeframe", examples=["today 12-m"]
     )
@@ -38,7 +53,12 @@ class WorldwideTrendRequest(BaseModel):
         "json_schema_extra": {
             "examples": [
                 {
-                    "keyword": "air fryer",
+                    "base_keyword": "iberian ham",
+                    "terms": [
+                        {"term": "jamón ibérico", "language": "es"},
+                        {"term": "presunto ibérico", "language": "pt"},
+                        {"term": "iberico ham", "language": "en"},
+                    ],
                     "timeframe": "today 12-m",
                     "language": "en-US",
                 }

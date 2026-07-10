@@ -20,6 +20,7 @@ from app.core.exceptions import (
     PyTrendsTimeoutError,
 )
 from app.core.logging import logger
+from app.utils.normalization import build_anchor_batches, merge_anchor_batches
 
 # PyTrends is the highest-weighted data source (Demand dimension) — a
 # transient Google Trends rate limit must not silently degrade the MOS.
@@ -34,6 +35,24 @@ RETRY_DECORATOR = retry(
     retry=retry_if_exception_type((Timeout, RequestsConnectionError, PyTrendsTimeoutError, PyTrendsRateLimitError)),
     reraise=True,
 )
+
+
+def _melt_region_df(df: pd.DataFrame, batch: list[tuple[str, str]]) -> pd.DataFrame:
+    """Melt a multi-term interest_by_region (COUNTRY) DataFrame — one column
+    per term plus an optional geoCode — into long rows
+    {country, term, term_language, value}. Country is the ISO-2 geoCode when
+    present, otherwise the index (country name)."""
+    has_geo_code = "geoCode" in df.columns
+    rows: list[dict[str, Any]] = []
+    for country_name, row in df.iterrows():
+        geo_code = row["geoCode"] if has_geo_code else None
+        country = str(geo_code) if geo_code else str(country_name)
+        for term, term_language in batch:
+            value = row[term] if term in df.columns else None
+            rows.append({"country": country, "term": term, "term_language": term_language, "value": value})
+    long_df = pd.DataFrame(rows, columns=["country", "term", "term_language", "value"])
+    long_df["value"] = pd.to_numeric(long_df["value"], errors="coerce")
+    return long_df
 
 
 def _handle_error(method_name: str, keyword: str, e: Exception) -> None:
@@ -160,46 +179,59 @@ class PyTrendsClient:
 
     @RETRY_DECORATOR
     def _interest_by_country_pytrends(
-        self, keyword: str, timeframe: str, language: str
+        self, terms: list[tuple[str, str]], timeframe: str, language: str
     ) -> tuple[pd.DataFrame, dict[str, Any]]:
+        # Compare all localized terms worldwide on ONE shared 0-100 axis. Up to
+        # 5 terms are a single build_payload; more than 5 are anchor-chained (see
+        # build_anchor_batches / merge_anchor_batches) so every batch is rescaled
+        # onto batch 1's axis via the shared anchor term (terms[0]).
+        anchor_term = terms[0][0] if terms else ""
         try:
             session = self._create_session(language)
-            session.build_payload([keyword], cat=0, timeframe=timeframe, geo="")
-            df = session.interest_by_region(resolution="COUNTRY", inc_low_vol=True, inc_geo_code=True)
+            frames: list[pd.DataFrame] = []
+            for batch in build_anchor_batches(terms):
+                session.build_payload([t for t, _ in batch], cat=0, timeframe=timeframe, geo="")
+                df = session.interest_by_region(resolution="COUNTRY", inc_low_vol=True, inc_geo_code=True)
+                if df.empty:
+                    batch_terms = [t for t, _ in batch]
+                    raise PyTrendsEmptyResponseError(f"No data returned for terms {batch_terms} worldwide")
+                frames.append(_melt_region_df(df, batch))
+
+            merged = merge_anchor_batches(frames, anchor_term)
 
             request_payload = {
-                "keyword": keyword,
+                "terms": [{"term": t, "language": lang} for t, lang in terms],
                 "timeframe": timeframe,
                 "language": language,
                 "provider": "pytrends",
             }
 
-            if df.empty:
-                raise PyTrendsEmptyResponseError(f"No data returned for keyword '{keyword}' worldwide")
-
-            return df, request_payload
+            return merged, request_payload
         except Timeout as e:
             raise PyTrendsTimeoutError(f"Timeout calling Google Trends: {e}") from e
         except (PyTrendsEmptyResponseError, PyTrendsTimeoutError, PyTrendsRateLimitError):
             raise
         except (IndexError, KeyError) as e:
-            logger.warning(f"Parse error for interest_by_country: keyword={keyword}, retrying...")
+            logger.warning(f"Parse error for interest_by_country: keyword={anchor_term}, retrying...")
             raise PyTrendsRateLimitError(f"Rate limited (parse error): {e}") from e
         except Exception as e:
-            _handle_error("interest_by_country", keyword, e)
+            _handle_error("interest_by_country", anchor_term, e)
             raise
 
-    def interest_by_country(self, keyword: str, timeframe: str, language: str) -> tuple[pd.DataFrame, dict[str, Any]]:
+    def interest_by_country(
+        self, terms: list[tuple[str, str]], timeframe: str, language: str
+    ) -> tuple[pd.DataFrame, dict[str, Any]]:
         try:
-            return self._interest_by_country_pytrends(keyword, timeframe, language)
+            return self._interest_by_country_pytrends(terms, timeframe, language)
         except (PyTrendsRateLimitError, PyTrendsTimeoutError) as e:
             if self._dataforseo is None:
                 raise
+            anchor_term = terms[0][0] if terms else ""
             logger.warning(
-                f"PyTrends exhausted retries for interest_by_country (keyword={keyword}): {e}. "
+                f"PyTrends exhausted retries for interest_by_country (keyword={anchor_term}): {e}. "
                 "Falling back to DataForSEO."
             )
-            return self._dataforseo.interest_by_country(keyword, timeframe, language)
+            return self._dataforseo.interest_by_country(terms, timeframe, language)
 
     @RETRY_DECORATOR
     def _related_queries_pytrends(

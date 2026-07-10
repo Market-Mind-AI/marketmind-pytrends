@@ -85,6 +85,8 @@ class InterestByRegionResponse(BaseModel):
 
 class CountryItem(BaseModel):
     country: str
+    term: str
+    term_language: str
     value: int | float
 
 

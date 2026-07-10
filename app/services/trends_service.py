@@ -182,15 +182,16 @@ class TrendsService:
         run = await self._ingestion_repo.create(source="google_trends", request_payload=request.model_dump())
         trend_req = await self._trend_request_repo.create(
             ingestion_run_id=run.id,
-            keyword=request.keyword,
+            keyword=request.base_keyword,
             country="WORLD",
             endpoint=endpoint,
             language=request.language,
             timeframe=request.timeframe,
         )
         try:
+            terms = [(t.term, t.language) for t in request.terms]
             df, req_payload = self._client.interest_by_country(
-                keyword=request.keyword,
+                terms=terms,
                 timeframe=request.timeframe,
                 language=request.language,
             )
@@ -200,10 +201,10 @@ class TrendsService:
                 request_payload=req_payload,
                 response_payload=dataframe_to_json_serializable(df),
             )
-            normalized = normalize_interest_by_country(df, request.keyword)
+            normalized = normalize_interest_by_country(df)
             await self._ibc_repo.bulk_create(
                 trend_request_id=trend_req.id,
-                keyword=request.keyword,
+                keyword=request.base_keyword,
                 records=normalized,
             )
             exec_time = elapsed_ms(start)
@@ -211,7 +212,7 @@ class TrendsService:
             await self._session.commit()
             self._log_success(
                 endpoint,
-                request.keyword,
+                request.base_keyword,
                 "WORLD",
                 run.id,
                 trend_req.id,
@@ -220,7 +221,7 @@ class TrendsService:
             )
             return InterestByCountryResponse(
                 request=RequestInfo(
-                    keyword=request.keyword,
+                    keyword=request.base_keyword,
                     country="WORLD",
                     timeframe=request.timeframe,
                     language=request.language,
@@ -229,7 +230,7 @@ class TrendsService:
                 data=InterestByCountryData(countries=[CountryItem(**r) for r in normalized]),
             )
         except Exception as e:
-            await self._fail(run, endpoint, request.keyword, "WORLD", start, e)
+            await self._fail(run, endpoint, request.base_keyword, "WORLD", start, e)
             raise
 
     async def collect_related_queries(self, request: TrendRequest) -> RelatedQueriesResponse:

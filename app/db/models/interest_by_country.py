@@ -18,6 +18,8 @@ class InterestByCountry(Base):
     )
     keyword: Mapped[str] = mapped_column(nullable=False)
     country: Mapped[str] = mapped_column(nullable=False)
+    term: Mapped[str] = mapped_column(nullable=False)
+    term_language: Mapped[str] = mapped_column(nullable=False)
     interest_value: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
     created_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow)
 
@@ -27,4 +29,5 @@ class InterestByCountry(Base):
         Index("ix_interest_by_country_trend_request_id", "trend_request_id"),
         Index("ix_interest_by_country_keyword", "keyword"),
         Index("ix_interest_by_country_country", "country"),
+        Index("ix_interest_by_country_term_language", "term_language"),
     )

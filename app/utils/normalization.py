@@ -55,23 +55,76 @@ def normalize_interest_by_region(df: pd.DataFrame, keyword: str) -> list[dict[st
     return records
 
 
-def normalize_interest_by_country(df: pd.DataFrame, keyword: str) -> list[dict[str, Any]]:
+def normalize_interest_by_country(df: pd.DataFrame) -> list[dict[str, Any]]:
+    """Normalize the long-format worldwide matrix produced by the client
+    (one row per country/term on a single common axis) into persistable
+    records. Null/NaN values are coerced to 0."""
     if df.empty:
         return []
 
     records: list[dict[str, Any]] = []
-    has_geo_code = "geoCode" in df.columns
-    col = keyword if keyword in df.columns else next((c for c in df.columns if c != "geoCode"), df.columns[0])
-
-    for country_name, row in df.iterrows():
-        value = _clean_value(row[col])
+    for _, row in df.iterrows():
+        value = _clean_value(row["value"])
         if value is None:
             value = 0
-        geo_code = row["geoCode"] if has_geo_code else None
-        country = str(geo_code) if geo_code else str(country_name)
-        records.append({"country": country, "value": value})
+        records.append(
+            {
+                "country": str(row["country"]),
+                "term": str(row["term"]),
+                "term_language": str(row["term_language"]),
+                "value": value,
+            }
+        )
 
     return records
+
+
+def build_anchor_batches(terms: list[tuple[str, str]]) -> list[list[tuple[str, str]]]:
+    """Split (term, language) pairs into Google-Trends-compatible batches of at
+    most 5 terms. If more than 5 terms are given, terms[0] is the anchor and is
+    prepended to every batch after the first, so all batches share a common term
+    for cross-batch rescaling (anchor-chaining). Batch 1 is terms[0:5]; each
+    subsequent batch is [anchor] + the next up-to-4 terms."""
+    if len(terms) <= 5:
+        return [list(terms)]
+    anchor = terms[0]
+    batches = [list(terms[:5])]
+    rest = list(terms[5:])
+    for i in range(0, len(rest), 4):
+        batches.append([anchor, *rest[i : i + 4]])
+    return batches
+
+
+def merge_anchor_batches(frames: list[pd.DataFrame], anchor_term: str) -> pd.DataFrame:
+    """Merge per-batch long-format frames (columns country/term/term_language/
+    value) onto batch 1's common axis using the shared anchor term.
+
+    Scaling factor for batch k (k > 1):
+        factor_k = (anchor's global max value in batch 1)
+                   / (anchor's global max value in batch k)
+    The anchor's maximum value across countries is used as the robust reference
+    cell. Every value in batch k is multiplied by factor_k, then the anchor's
+    own rows in batch k are dropped (batch 1's anchor rows are kept) to
+    deduplicate. If the anchor's max in batch k is 0 (no signal to scale
+    against), factor_k is 0.0. Scaled values are intentionally NOT clamped to
+    [0, 100] — comparable ratios can legitimately exceed 100 after rescaling."""
+    columns = ["country", "term", "term_language", "value"]
+    if not frames:
+        return pd.DataFrame(columns=columns)
+
+    reference_frame = frames[0]
+    ref_anchor = reference_frame.loc[reference_frame["term"] == anchor_term, "value"]
+    reference = float(ref_anchor.max()) if not ref_anchor.empty else 0.0
+
+    merged = [reference_frame]
+    for frame in frames[1:]:
+        anchor_vals = frame.loc[frame["term"] == anchor_term, "value"]
+        anchor_max = float(anchor_vals.max()) if not anchor_vals.empty else 0.0
+        factor = reference / anchor_max if anchor_max > 0 else 0.0
+        scaled = frame.loc[frame["term"] != anchor_term].copy()
+        scaled["value"] = scaled["value"] * factor
+        merged.append(scaled)
+    return pd.concat(merged, ignore_index=True)
 
 
 def normalize_related_queries(data: dict[str, Any], keyword: str) -> dict[str, list[dict[str, Any]]]:

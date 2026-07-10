@@ -46,6 +46,7 @@ from app.clients.dataforseo_locations import ISO2_TO_LOCATION_NAME, UNSUPPORTED_
 from app.core.config import settings
 from app.core.exceptions import DataForSEOClientError
 from app.core.logging import logger
+from app.utils.normalization import build_anchor_batches, merge_anchor_batches
 
 _SANDBOX_HOST = "https://sandbox.dataforseo.com"
 # DataForSEO status codes are 20000-series for success, 40000+ for errors —
@@ -144,12 +145,14 @@ class DataForSEOClient:
             raise DataForSEOClientError(f"DataForSEO returned no result for keyword '{keyword}' in '{country}'")
         return list(task.result[0].items or []) if task.result[0] is not None else []
 
-    def _explore_worldwide(self, keyword: str, timeframe: str) -> list[Any]:
+    def _explore_worldwide(self, keywords: list[str], timeframe: str) -> list[Any]:
         """Worldwide variant of `_explore` — omits location_name entirely, so
-        DataForSEO returns global (unrestricted) Google Trends data. Best-effort:
-        if the API rejects a location-less request or returns nothing, the caller
+        DataForSEO returns global (unrestricted) Google Trends data. Compares up
+        to 5 keywords in one call on a single common axis. Best-effort: if the
+        API rejects a location-less request or returns nothing, the caller
         surfaces a DataForSEOClientError (the indicator is treated as unavailable
         rather than fabricated)."""
+        label = ", ".join(keywords)
         date_from, date_to = _timeframe_to_date_range(timeframe)
         host = _SANDBOX_HOST if settings.dataforseo_use_sandbox else None
         configuration = dfs_config.Configuration(
@@ -161,7 +164,7 @@ class DataForSEOClient:
                 response = api.google_trends_explore_live(
                     [
                         KeywordsDataGoogleTrendsExploreLiveRequestInfo(
-                            keywords=[keyword],
+                            keywords=keywords,
                             date_from=date_from,
                             date_to=date_to,
                             item_types=["google_trends_map"],
@@ -169,41 +172,62 @@ class DataForSEOClient:
                     ]
                 )
         except ApiException as exc:
-            raise DataForSEOClientError(f"DataForSEO API error for keyword '{keyword}' worldwide: {exc}") from exc
+            raise DataForSEOClientError(f"DataForSEO API error for keywords '{label}' worldwide: {exc}") from exc
 
         tasks = response.tasks or []
         if not tasks:
-            raise DataForSEOClientError(f"DataForSEO returned no tasks for keyword '{keyword}' worldwide")
+            raise DataForSEOClientError(f"DataForSEO returned no tasks for keywords '{label}' worldwide")
         task = tasks[0]
         if task is None:
-            raise DataForSEOClientError(f"DataForSEO returned an empty task for keyword '{keyword}' worldwide")
+            raise DataForSEOClientError(f"DataForSEO returned an empty task for keywords '{label}' worldwide")
         if task.status_code is not None and task.status_code >= _TASK_ERROR_THRESHOLD:
             raise DataForSEOClientError(f"DataForSEO task failed ({task.status_code}): {task.status_message}")
         if not task.result:
-            raise DataForSEOClientError(f"DataForSEO returned no result for keyword '{keyword}' worldwide")
+            raise DataForSEOClientError(f"DataForSEO returned no result for keywords '{label}' worldwide")
         return list(task.result[0].items or []) if task.result[0] is not None else []
 
-    def _worldwide_request_payload(self, keyword: str, timeframe: str, language: str) -> dict[str, Any]:
+    def _worldwide_request_payload(self, terms: list[tuple[str, str]], timeframe: str, language: str) -> dict[str, Any]:
         return {
-            "keyword": keyword,
+            "terms": [{"term": t, "language": lang} for t, lang in terms],
             "timeframe": timeframe,
             "language": language,
             "provider": "dataforseo_fallback",
         }
 
-    def interest_by_country(self, keyword: str, timeframe: str, language: str) -> tuple[pd.DataFrame, dict[str, Any]]:
-        items = self._explore_worldwide(keyword, timeframe)
+    def _melt_worldwide_map(self, items: list[Any], batch: list[tuple[str, str]]) -> pd.DataFrame:
+        """Melt a multi-keyword worldwide map item into long rows
+        {country, term, term_language, value}. Each map point's `values` list is
+        aligned with the queried keyword order; null values coerce to 0.0.
+        Country is the ISO-2 geo_id when present, otherwise geo_name."""
         map_item = next((i for i in items if isinstance(i, GoogleTrendsGoogleTrendsMapElementItem)), None)
         if map_item is None or not map_item.data:
-            raise DataForSEOClientError(f"DataForSEO returned no worldwide interest-by-country data for '{keyword}'")
+            batch_terms = [t for t, _ in batch]
+            raise DataForSEOClientError(f"DataForSEO returned no worldwide interest-by-country data for {batch_terms}")
 
         rows: list[dict[str, Any]] = []
         for point in map_item.data:
             if point is None or point.geo_name is None:
                 continue
-            rows.append({"country": point.geo_name, "geoCode": point.geo_id, "value": _first_value(point.values)})
-        df = pd.DataFrame(rows).set_index("country").rename(columns={"value": keyword})
-        return df, self._worldwide_request_payload(keyword, timeframe, language)
+            country = str(point.geo_id) if point.geo_id else str(point.geo_name)
+            values = point.values or []
+            for idx, (term, term_language) in enumerate(batch):
+                value = _coerce(values[idx]) if idx < len(values) else 0.0
+                rows.append({"country": country, "term": term, "term_language": term_language, "value": value})
+        return pd.DataFrame(rows, columns=["country", "term", "term_language", "value"])
+
+    def interest_by_country(
+        self, terms: list[tuple[str, str]], timeframe: str, language: str
+    ) -> tuple[pd.DataFrame, dict[str, Any]]:
+        # DataForSEO's Explore compares up to 5 keywords per call on one common
+        # axis; >5 terms are anchor-chained exactly like the PyTrends path so the
+        # whole matrix stays on a single comparable axis.
+        anchor_term = terms[0][0] if terms else ""
+        frames: list[pd.DataFrame] = []
+        for batch in build_anchor_batches(terms):
+            items = self._explore_worldwide([t for t, _ in batch], timeframe)
+            frames.append(self._melt_worldwide_map(items, batch))
+        merged = merge_anchor_batches(frames, anchor_term)
+        return merged, self._worldwide_request_payload(terms, timeframe, language)
 
     def interest_over_time(
         self, keyword: str, country: str, timeframe: str, language: str

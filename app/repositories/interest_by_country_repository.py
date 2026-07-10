@@ -26,6 +26,8 @@ class InterestByCountryRepository:
                 trend_request_id=trend_request_id,
                 keyword=keyword,
                 country=record["country"],
+                term=record["term"],
+                term_language=record["term_language"],
                 interest_value=record["value"],
                 created_at=now,
             )
