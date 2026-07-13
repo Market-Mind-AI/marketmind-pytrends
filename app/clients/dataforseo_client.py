@@ -229,6 +229,22 @@ class DataForSEOClient:
         merged = merge_anchor_batches(frames, anchor_term)
         return merged, self._worldwide_request_payload(terms, timeframe, language)
 
+    def interest_by_region_worldwide(
+        self, terms: list[tuple[str, str]], timeframe: str, language: str
+    ) -> tuple[pd.DataFrame, dict[str, Any]]:
+        # DataForSEO's Google Trends Explore returns a COUNTRY-level map
+        # (`google_trends_map` keyed by ISO-2 geo_id), NOT a worldwide
+        # sub-national (ISO-3166-2, e.g. 'US-CA') breakdown. There is no
+        # DataForSEO item type that yields comparable worldwide sub-regions, so
+        # this endpoint has no honest fallback. Rather than fabricate sub-region
+        # rows, raise — the indicator is treated as unavailable when PyTrends is
+        # exhausted (same decision as the map-less paths above).
+        label = ", ".join(t for t, _ in terms)
+        raise DataForSEOClientError(
+            f"DataForSEO cannot provide worldwide sub-national (ISO-3166-2) region data for '{label}' — "
+            "Explore only returns country-level maps."
+        )
+
     def interest_over_time(
         self, keyword: str, country: str, timeframe: str, language: str
     ) -> tuple[pd.DataFrame, dict[str, Any]]:

@@ -1,6 +1,7 @@
 from app.db.models.ingestion_run import IngestionRun
 from app.db.models.interest_by_country import InterestByCountry
 from app.db.models.interest_by_region import InterestByRegion
+from app.db.models.interest_by_region_worldwide import InterestByRegionWorldwide
 from app.db.models.interest_over_time import InterestOverTime
 from app.db.models.raw_api_response import RawApiResponse
 from app.db.models.related_query import RelatedQuery
@@ -13,6 +14,7 @@ __all__ = [
     "IngestionRun",
     "InterestByCountry",
     "InterestByRegion",
+    "InterestByRegionWorldwide",
     "InterestOverTime",
     "RawApiResponse",
     "RelatedQuery",

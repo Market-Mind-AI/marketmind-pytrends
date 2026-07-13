@@ -55,6 +55,39 @@ def _melt_region_df(df: pd.DataFrame, batch: list[tuple[str, str]]) -> pd.DataFr
     return long_df
 
 
+def _melt_region_worldwide_df(df: pd.DataFrame, batch: list[tuple[str, str]]) -> pd.DataFrame:
+    """Melt a multi-term worldwide interest_by_region (REGION) DataFrame — one
+    column per term plus a geoCode — into long rows {country, region_code,
+    region_name, term, term_language, value}. The geoCode is a full ISO-3166-2
+    code (e.g. 'US-CA'); country is the part before the hyphen ('US'). Rows
+    whose geoCode has no hyphen are national/aggregate rows (not true
+    sub-regions) and are dropped so only sub-national regions remain."""
+    has_geo_code = "geoCode" in df.columns
+    rows: list[dict[str, Any]] = []
+    for region_name, row in df.iterrows():
+        geo_code = row["geoCode"] if has_geo_code else None
+        if not geo_code or "-" not in str(geo_code):
+            continue
+        region_code = str(geo_code)
+        country = region_code.split("-")[0]
+        for term, term_language in batch:
+            value = row[term] if term in df.columns else None
+            rows.append(
+                {
+                    "country": country,
+                    "region_code": region_code,
+                    "region_name": str(region_name),
+                    "term": term,
+                    "term_language": term_language,
+                    "value": value,
+                }
+            )
+    columns = ["country", "region_code", "region_name", "term", "term_language", "value"]
+    long_df = pd.DataFrame(rows, columns=columns)
+    long_df["value"] = pd.to_numeric(long_df["value"], errors="coerce")
+    return long_df
+
+
 def _handle_error(method_name: str, keyword: str, e: Exception) -> None:
     error_msg = str(e)
     if "429" in error_msg or "TooManyRequests" in type(e).__name__ or "too many" in error_msg.lower():
@@ -232,6 +265,70 @@ class PyTrendsClient:
                 "Falling back to DataForSEO."
             )
             return self._dataforseo.interest_by_country(terms, timeframe, language)
+
+    @RETRY_DECORATOR
+    def _interest_by_region_worldwide_pytrends(
+        self, terms: list[tuple[str, str]], timeframe: str, language: str
+    ) -> tuple[pd.DataFrame, dict[str, Any]]:
+        # Compare all localized terms across WORLDWIDE sub-national regions on ONE
+        # shared 0-100 axis (geo='' + resolution='REGION'). Up to 5 terms are a
+        # single build_payload; more than 5 are anchor-chained (see
+        # build_anchor_batches / merge_anchor_batches) so every batch is rescaled
+        # onto batch 1's axis via the shared anchor term (terms[0]). This is the
+        # cross-country-comparable counterpart of the per-country interest_by_region
+        # (which is self-scaled to each country's own peak).
+        anchor_term = terms[0][0] if terms else ""
+        try:
+            session = self._create_session(language)
+            frames: list[pd.DataFrame] = []
+            for batch in build_anchor_batches(terms):
+                session.build_payload([t for t, _ in batch], cat=0, timeframe=timeframe, geo="")
+                df = session.interest_by_region(resolution="REGION", inc_low_vol=True, inc_geo_code=True)
+                if df.empty:
+                    batch_terms = [t for t, _ in batch]
+                    raise PyTrendsEmptyResponseError(f"No data returned for terms {batch_terms} worldwide")
+                frames.append(_melt_region_worldwide_df(df, batch))
+
+            merged = merge_anchor_batches(frames, anchor_term)
+
+            request_payload = {
+                "terms": [{"term": t, "language": lang} for t, lang in terms],
+                "timeframe": timeframe,
+                "language": language,
+                "provider": "pytrends",
+            }
+
+            return merged, request_payload
+        except Timeout as e:
+            raise PyTrendsTimeoutError(f"Timeout calling Google Trends: {e}") from e
+        except (PyTrendsEmptyResponseError, PyTrendsTimeoutError, PyTrendsRateLimitError):
+            raise
+        except (IndexError, KeyError) as e:
+            logger.warning(f"Parse error for interest_by_region_worldwide: keyword={anchor_term}, retrying...")
+            raise PyTrendsRateLimitError(f"Rate limited (parse error): {e}") from e
+        except Exception as e:
+            _handle_error("interest_by_region_worldwide", anchor_term, e)
+            raise
+
+    def interest_by_region_worldwide(
+        self, terms: list[tuple[str, str]], timeframe: str, language: str
+    ) -> tuple[pd.DataFrame, dict[str, Any]]:
+        try:
+            return self._interest_by_region_worldwide_pytrends(terms, timeframe, language)
+        except (PyTrendsRateLimitError, PyTrendsTimeoutError) as e:
+            if self._dataforseo is None:
+                raise
+            anchor_term = terms[0][0] if terms else ""
+            logger.warning(
+                f"PyTrends exhausted retries for interest_by_region_worldwide (keyword={anchor_term}): {e}. "
+                "Falling back to DataForSEO."
+            )
+            # DataForSEO's Google Trends Explore returns country-level maps, NOT a
+            # reliable WORLDWIDE sub-national (ISO-3166-2) breakdown. The fallback
+            # therefore cannot satisfy this endpoint's cross-country regional
+            # contract; rather than fabricate sub-regions it raises
+            # DataForSEOClientError (mirroring how the map-less paths raise).
+            return self._dataforseo.interest_by_region_worldwide(terms, timeframe, language)
 
     @RETRY_DECORATOR
     def _related_queries_pytrends(

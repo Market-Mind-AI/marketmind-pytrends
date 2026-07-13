@@ -100,6 +100,25 @@ class InterestByCountryResponse(BaseModel):
     data: InterestByCountryData
 
 
+class RegionWorldwideItem(BaseModel):
+    country: str
+    region_code: str
+    region_name: str | None = None
+    term: str
+    term_language: str
+    value: int | float
+
+
+class InterestByRegionWorldwideData(BaseModel):
+    regions: list[RegionWorldwideItem]
+
+
+class InterestByRegionWorldwideResponse(BaseModel):
+    request: RequestInfo
+    metadata: Metadata
+    data: InterestByRegionWorldwideData
+
+
 class QueryItem(BaseModel):
     query: str
     value: int | float | None = None

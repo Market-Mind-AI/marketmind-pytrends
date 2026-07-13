@@ -79,6 +79,34 @@ def normalize_interest_by_country(df: pd.DataFrame) -> list[dict[str, Any]]:
     return records
 
 
+def normalize_interest_by_region_worldwide(df: pd.DataFrame) -> list[dict[str, Any]]:
+    """Normalize the long-format worldwide sub-national matrix produced by the
+    client (one row per region/term on a single common axis) into persistable
+    records. Null/NaN interest values are coerced to 0; a missing region_name
+    stays None."""
+    if df.empty:
+        return []
+
+    records: list[dict[str, Any]] = []
+    for _, row in df.iterrows():
+        value = _clean_value(row["value"])
+        if value is None:
+            value = 0
+        region_name = row["region_name"] if "region_name" in df.columns else None
+        records.append(
+            {
+                "country": str(row["country"]),
+                "region_code": str(row["region_code"]),
+                "region_name": None if region_name is None or pd.isna(region_name) else str(region_name),
+                "term": str(row["term"]),
+                "term_language": str(row["term_language"]),
+                "value": value,
+            }
+        )
+
+    return records
+
+
 def build_anchor_batches(terms: list[tuple[str, str]]) -> list[list[tuple[str, str]]]:
     """Split (term, language) pairs into Google-Trends-compatible batches of at
     most 5 terms. If more than 5 terms are given, terms[0] is the anchor and is
