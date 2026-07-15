@@ -7,13 +7,9 @@ from app.core.config import settings
 from app.db.base import Base
 from app.db.models import (  # noqa: F401
     IngestionRun,
-    InterestByRegion,
-    InterestOverTime,
+    KeywordRelated,
+    KeywordSearchVolume,
     RawApiResponse,
-    RelatedQuery,
-    RelatedTopic,
-    Suggestion,
-    TrendingRss,
     TrendRequest,
 )
 

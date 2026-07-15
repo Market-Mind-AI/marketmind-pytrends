@@ -7,23 +7,6 @@ class IngestionStatus(StrEnum):
     FAILED = "failed"
 
 
-class TrendEndpoint(StrEnum):
-    INTEREST_OVER_TIME = "interest_over_time"
-    INTEREST_BY_REGION = "interest_by_region"
-    INTEREST_BY_COUNTRY = "interest_by_country"
-    INTEREST_BY_REGION_WORLDWIDE = "interest_by_region_worldwide"
-    RELATED_QUERIES = "related_queries"
-    RELATED_TOPICS = "related_topics"
-    SUGGESTIONS = "suggestions"
-    TRENDING_RSS = "trending_rss"
-    CATEGORIES = "categories"
-
-
-class QueryType(StrEnum):
-    TOP = "top"
-    RISING = "rising"
-
-
-class TopicType(StrEnum):
-    TOP = "top"
-    RISING = "rising"
+class KeywordEndpoint(StrEnum):
+    SEARCH_VOLUME = "search_volume"
+    KEYWORDS_FOR_KEYWORDS = "keywords_for_keywords"

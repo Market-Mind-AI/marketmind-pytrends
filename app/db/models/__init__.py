@@ -1,25 +1,13 @@
 from app.db.models.ingestion_run import IngestionRun
-from app.db.models.interest_by_country import InterestByCountry
-from app.db.models.interest_by_region import InterestByRegion
-from app.db.models.interest_by_region_worldwide import InterestByRegionWorldwide
-from app.db.models.interest_over_time import InterestOverTime
+from app.db.models.keyword_related import KeywordRelated
+from app.db.models.keyword_search_volume import KeywordSearchVolume
 from app.db.models.raw_api_response import RawApiResponse
-from app.db.models.related_query import RelatedQuery
-from app.db.models.related_topic import RelatedTopic
-from app.db.models.suggestion import Suggestion
 from app.db.models.trend_request import TrendRequest
-from app.db.models.trending_rss import TrendingRss
 
 __all__ = [
     "IngestionRun",
-    "InterestByCountry",
-    "InterestByRegion",
-    "InterestByRegionWorldwide",
-    "InterestOverTime",
+    "KeywordRelated",
+    "KeywordSearchVolume",
     "RawApiResponse",
-    "RelatedQuery",
-    "RelatedTopic",
-    "Suggestion",
     "TrendRequest",
-    "TrendingRss",
 ]

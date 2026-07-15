@@ -24,16 +24,8 @@ class TrendRequest(Base):
 
     ingestion_run: Mapped["IngestionRun"] = relationship(back_populates="trend_requests")  # type: ignore[name-defined]  # noqa: F821
     raw_api_responses: Mapped[list["RawApiResponse"]] = relationship(back_populates="trend_request")  # type: ignore[name-defined]  # noqa: F821
-    interest_over_time_records: Mapped[list["InterestOverTime"]] = relationship(back_populates="trend_request")  # type: ignore[name-defined]  # noqa: F821
-    interest_by_region_records: Mapped[list["InterestByRegion"]] = relationship(back_populates="trend_request")  # type: ignore[name-defined]  # noqa: F821
-    interest_by_country_records: Mapped[list["InterestByCountry"]] = relationship(back_populates="trend_request")  # type: ignore[name-defined]  # noqa: F821
-    interest_by_region_worldwide_records: Mapped[list["InterestByRegionWorldwide"]] = relationship(  # type: ignore[name-defined]  # noqa: F821
-        back_populates="trend_request"
-    )
-    related_queries: Mapped[list["RelatedQuery"]] = relationship(back_populates="trend_request")  # type: ignore[name-defined]  # noqa: F821
-    related_topics: Mapped[list["RelatedTopic"]] = relationship(back_populates="trend_request")  # type: ignore[name-defined]  # noqa: F821
-    suggestions: Mapped[list["Suggestion"]] = relationship(back_populates="trend_request")  # type: ignore[name-defined]  # noqa: F821
-    trending_rss_records: Mapped[list["TrendingRss"]] = relationship(back_populates="trend_request")  # type: ignore[name-defined]  # noqa: F821
+    keyword_search_volume_records: Mapped[list["KeywordSearchVolume"]] = relationship(back_populates="trend_request")  # type: ignore[name-defined]  # noqa: F821
+    keyword_related_records: Mapped[list["KeywordRelated"]] = relationship(back_populates="trend_request")  # type: ignore[name-defined]  # noqa: F821
 
     __table_args__ = (
         Index("ix_trend_requests_keyword", "keyword"),

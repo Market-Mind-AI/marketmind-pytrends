@@ -1,9 +1,8 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pandas as pd
 from fastapi.testclient import TestClient
 
-from app.core.exceptions import PyTrendsEmptyResponseError, PyTrendsTimeoutError
+from app.core.exceptions import DataForSEORateLimitError, DataForSEOTimeoutError
 from app.db.session import get_session
 from app.main import app
 
@@ -18,128 +17,145 @@ def _mock_session() -> AsyncMock:
     return session
 
 
-def _mock_interest_over_time_df() -> pd.DataFrame:
-    index = pd.to_datetime(["2025-01-01", "2025-02-01"])
-    return pd.DataFrame(
-        {"air fryer": [50, 75], "isPartial": [False, False]},
-        index=index,
-    )
+def _override_session(session: AsyncMock) -> None:
+    async def gen():  # type: ignore[no-untyped-def]
+        yield session
+
+    app.dependency_overrides[get_session] = gen
 
 
-class TestInterestOverTimeEndpoint:
-    @patch("app.clients.pytrends_client.PyTrendsClient.interest_over_time")
-    def test_success(self, mock_client: MagicMock) -> None:
-        session = _mock_session()
-
-        async def override_session():  # type: ignore[no-untyped-def]
-            yield session
-
-        app.dependency_overrides[get_session] = override_session
-
-        df = _mock_interest_over_time_df()
-        req_payload = {
+def _sv_records() -> list[dict]:
+    return [
+        {
             "keyword": "air fryer",
-            "country": "ES",
-            "timeframe": "today 12-m",
-            "language": "en-US",
+            "search_volume": 12000,
+            "competition": "HIGH",
+            "competition_index": 80,
+            "cpc": 1.25,
+            "monthly_searches": [{"year": 2026, "month": 6, "search_volume": 12000}],
         }
-        mock_client.return_value = (df, req_payload)
+    ]
 
+
+class TestSearchVolumeEndpoint:
+    @patch("app.clients.dataforseo_client.DataForSEOClient.search_volume")
+    def test_success(self, mock_client: MagicMock) -> None:
+        _override_session(_mock_session())
+        mock_client.return_value = (_sv_records(), {"provider": "dataforseo_google_ads"})
         try:
             client = TestClient(app)
             response = client.post(
-                "/interest-over-time",
-                json={"keyword": "air fryer", "country": "ES", "timeframe": "today 12-m", "language": "en-US"},
+                "/search-volume",
+                json={"location": "ES", "language": "en-US", "keywords": ["air fryer"]},
             )
-
             assert response.status_code == 200
             data = response.json()
-            assert data["metadata"]["endpoint"] == "interest_over_time"
+            assert data["metadata"]["endpoint"] == "search_volume"
             assert data["metadata"]["status"] == "success"
-            assert data["metadata"]["records"] == 2
-            assert data["metadata"]["stored"] is True
+            assert data["metadata"]["records"] == 1
+            assert data["metadata"]["provider"] == "Google Ads"
             assert "ingestion_run_id" in data["metadata"]
             assert "trend_request_id" in data["metadata"]
-            assert len(data["data"]["interest_over_time"]) == 2
+            item = data["data"]["keywords"][0]
+            assert item["keyword"] == "air fryer"
+            assert item["search_volume"] == 12000
+            assert item["monthly_searches"][0]["search_volume"] == 12000
         finally:
             app.dependency_overrides.clear()
 
-    @patch("app.clients.pytrends_client.PyTrendsClient.interest_over_time")
-    def test_empty_response(self, mock_client: MagicMock) -> None:
-        session = _mock_session()
-
-        async def override_session():  # type: ignore[no-untyped-def]
-            yield session
-
-        app.dependency_overrides[get_session] = override_session
-        mock_client.side_effect = PyTrendsEmptyResponseError("No data returned")
-
+    @patch("app.clients.dataforseo_client.DataForSEOClient.search_volume")
+    def test_none_fields_success(self, mock_client: MagicMock) -> None:
+        _override_session(_mock_session())
+        records = [
+            {
+                "keyword": "obscure kw",
+                "search_volume": None,
+                "competition": None,
+                "competition_index": None,
+                "cpc": None,
+                "monthly_searches": [],
+            }
+        ]
+        mock_client.return_value = (records, {"provider": "dataforseo_google_ads"})
         try:
             client = TestClient(app)
-            response = client.post(
-                "/interest-over-time",
-                json={"keyword": "xyz123abc", "country": "ES"},
-            )
-            assert response.status_code == 404
+            response = client.post("/search-volume", json={"location": "ES", "keywords": ["obscure kw"]})
+            assert response.status_code == 200
+            item = response.json()["data"]["keywords"][0]
+            assert item["search_volume"] is None
+            assert item["cpc"] is None
+            assert item["monthly_searches"] == []
         finally:
             app.dependency_overrides.clear()
 
-    @patch("app.clients.pytrends_client.PyTrendsClient.interest_over_time")
-    def test_timeout(self, mock_client: MagicMock) -> None:
-        session = _mock_session()
-
-        async def override_session():  # type: ignore[no-untyped-def]
-            yield session
-
-        app.dependency_overrides[get_session] = override_session
-        mock_client.side_effect = PyTrendsTimeoutError("Timeout")
-
+    @patch("app.clients.dataforseo_client.DataForSEOClient.search_volume")
+    def test_rate_limit_returns_429(self, mock_client: MagicMock) -> None:
+        _override_session(_mock_session())
+        mock_client.side_effect = DataForSEORateLimitError("rate limited")
         try:
             client = TestClient(app)
-            response = client.post(
-                "/interest-over-time",
-                json={"keyword": "air fryer", "country": "ES"},
-            )
+            response = client.post("/search-volume", json={"location": "ES", "keywords": ["air fryer"]})
+            assert response.status_code == 429
+        finally:
+            app.dependency_overrides.clear()
+
+    @patch("app.clients.dataforseo_client.DataForSEOClient.search_volume")
+    def test_timeout_returns_504(self, mock_client: MagicMock) -> None:
+        _override_session(_mock_session())
+        mock_client.side_effect = DataForSEOTimeoutError("timeout")
+        try:
+            client = TestClient(app)
+            response = client.post("/search-volume", json={"location": "ES", "keywords": ["air fryer"]})
             assert response.status_code == 504
         finally:
             app.dependency_overrides.clear()
 
-    def test_invalid_request_missing_keyword(self) -> None:
+    def test_invalid_location_code(self) -> None:
         client = TestClient(app)
-        response = client.post("/interest-over-time", json={"country": "ES"})
+        response = client.post("/search-volume", json={"location": "ESP", "keywords": ["air fryer"]})
         assert response.status_code == 422
 
-    def test_invalid_country_code(self) -> None:
+    def test_missing_keywords(self) -> None:
         client = TestClient(app)
-        response = client.post(
-            "/interest-over-time",
-            json={"keyword": "air fryer", "country": "ESP"},
-        )
+        response = client.post("/search-volume", json={"location": "ES"})
         assert response.status_code == 422
 
 
-class TestSuggestionsEndpoint:
-    @patch("app.clients.pytrends_client.PyTrendsClient.suggestions")
+class TestKeywordsForKeywordsEndpoint:
+    @patch("app.clients.dataforseo_client.DataForSEOClient.keywords_for_keywords")
     def test_success(self, mock_client: MagicMock) -> None:
-        session = _mock_session()
-
-        async def override_session():  # type: ignore[no-untyped-def]
-            yield session
-
-        app.dependency_overrides[get_session] = override_session
-        mock_client.return_value = (
-            [{"title": "Air fryer", "type": "Topic", "mid": "/m/abc"}],
-            {"keyword": "air fryer", "language": "en-US"},
-        )
-
+        _override_session(_mock_session())
+        records = [
+            {
+                "seed_keyword": "air fryer",
+                "keyword": "best air fryer",
+                "search_volume": 5000,
+                "competition_index": 60,
+                "cpc": 0.9,
+                "monthly_searches": [{"year": 2026, "month": 6, "search_volume": 5000}],
+            }
+        ]
+        mock_client.return_value = (records, {"provider": "dataforseo_google_ads", "limit": None})
         try:
             client = TestClient(app)
-            response = client.post("/suggestions", json={"keyword": "air fryer"})
-
+            response = client.post(
+                "/keywords-for-keywords",
+                json={"location": "ES", "language": "en-US", "seed_keywords": ["air fryer"]},
+            )
             assert response.status_code == 200
             data = response.json()
-            assert data["metadata"]["endpoint"] == "suggestions"
-            assert len(data["data"]["suggestions"]) == 1
-            assert data["data"]["suggestions"][0]["title"] == "Air fryer"
+            assert data["metadata"]["endpoint"] == "keywords_for_keywords"
+            assert data["metadata"]["records"] == 1
+            item = data["data"]["keywords"][0]
+            assert item["seed_keyword"] == "air fryer"
+            assert item["keyword"] == "best air fryer"
         finally:
             app.dependency_overrides.clear()
+
+    def test_too_many_seeds_returns_422(self) -> None:
+        client = TestClient(app)
+        response = client.post(
+            "/keywords-for-keywords",
+            json={"location": "ES", "seed_keywords": [f"kw{i}" for i in range(21)]},
+        )
+        assert response.status_code == 422

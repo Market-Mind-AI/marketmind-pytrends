@@ -4,34 +4,35 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models.trending_rss import TrendingRss
+from app.db.models.keyword_related import KeywordRelated
 from app.utils.time import utc_now
 
 
-class TrendingRssRepository:
+class KeywordRelatedRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
     async def bulk_create(
         self,
         trend_request_id: uuid.UUID,
-        geo: str,
+        location: str,
+        language: str,
         records: list[dict[str, Any]],
-    ) -> list[TrendingRss]:
+    ) -> list[KeywordRelated]:
         entities = []
         now = utc_now()
         for record in records:
-            entity = TrendingRss(
+            entity = KeywordRelated(
                 id=uuid.uuid4(),
                 trend_request_id=trend_request_id,
-                title=record["title"],
-                traffic=record.get("traffic"),
-                description=record.get("description"),
-                pub_date=record.get("pub_date"),
-                link=record.get("link"),
-                articles=record.get("articles"),
-                article_count=record.get("article_count"),
-                geo=geo,
+                seed_keyword=record["seed_keyword"],
+                keyword=record["keyword"],
+                location=location,
+                language=language,
+                search_volume=record.get("search_volume"),
+                competition_index=record.get("competition_index"),
+                cpc=record.get("cpc"),
+                monthly_searches=record.get("monthly_searches"),
                 created_at=now,
             )
             entities.append(entity)
@@ -39,8 +40,8 @@ class TrendingRssRepository:
         await self._session.flush()
         return entities
 
-    async def get_by_trend_request_id(self, trend_request_id: uuid.UUID) -> list[TrendingRss]:
+    async def get_by_trend_request_id(self, trend_request_id: uuid.UUID) -> list[KeywordRelated]:
         result = await self._session.execute(
-            select(TrendingRss).where(TrendingRss.trend_request_id == trend_request_id)
+            select(KeywordRelated).where(KeywordRelated.trend_request_id == trend_request_id)
         )
         return list(result.scalars().all())

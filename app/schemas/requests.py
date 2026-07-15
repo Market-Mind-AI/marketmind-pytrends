@@ -3,90 +3,56 @@ from pydantic import BaseModel, Field
 from app.core.config import settings
 
 
-class TrendRequest(BaseModel):
-    keyword: str = Field(..., min_length=2, description="Search keyword", examples=["air fryer"])
-    country: str = Field(
+class SearchVolumeRequest(BaseModel):
+    location: str = Field(
         ..., min_length=2, max_length=2, pattern=r"^[A-Z]{2}$", description="ISO-2 country code", examples=["ES"]
     )
-    timeframe: str = Field(
-        default=settings.default_timeframe, description="Google Trends timeframe", examples=["today 12-m"]
-    )
     language: str = Field(default=settings.default_hl, description="Language code", examples=["en-US"])
-
-    model_config = {
-        "json_schema_extra": {
-            "examples": [
-                {
-                    "keyword": "air fryer",
-                    "country": "ES",
-                    "timeframe": "today 12-m",
-                    "language": "en-US",
-                }
-            ]
-        }
-    }
-
-
-class LocalizedTerm(BaseModel):
-    term: str = Field(..., min_length=1, description="Localized search term", examples=["jamón ibérico"])
-    language: str = Field(..., min_length=2, description="Language code of the term", examples=["es"])
-
-    model_config = {"json_schema_extra": {"examples": [{"term": "jamón ibérico", "language": "es"}]}}
-
-
-class WorldwideTrendRequest(BaseModel):
-    base_keyword: str = Field(
-        ..., min_length=2, description="Base keyword grouping the localized terms", examples=["iberian ham"]
-    )
-    terms: list[LocalizedTerm] = Field(
+    keywords: list[str] = Field(
         ...,
         min_length=1,
-        description="Localized terms compared on a single common Google Trends axis",
-        examples=[[{"term": "jamón ibérico", "language": "es"}, {"term": "presunto ibérico", "language": "pt"}]],
+        max_length=1000,
+        description="Keywords to fetch Google Ads search volume for (1..1000)",
+        examples=[["air fryer", "robot vacuum"]],
     )
-    timeframe: str = Field(
-        default=settings.default_timeframe, description="Google Trends timeframe", examples=["today 12-m"]
-    )
-    language: str = Field(default=settings.default_hl, description="Language code", examples=["en-US"])
 
     model_config = {
         "json_schema_extra": {
             "examples": [
                 {
-                    "base_keyword": "iberian ham",
-                    "terms": [
-                        {"term": "jamón ibérico", "language": "es"},
-                        {"term": "presunto ibérico", "language": "pt"},
-                        {"term": "iberico ham", "language": "en"},
-                    ],
-                    "timeframe": "today 12-m",
+                    "location": "ES",
                     "language": "en-US",
+                    "keywords": ["air fryer", "robot vacuum"],
                 }
             ]
         }
     }
 
 
-class TrendingRssRequest(BaseModel):
-    geo: str = Field(
-        ..., min_length=2, max_length=2, pattern=r"^[A-Z]{2}$", description="ISO-2 country code", examples=["US"]
+class KeywordsForKeywordsRequest(BaseModel):
+    location: str = Field(
+        ..., min_length=2, max_length=2, pattern=r"^[A-Z]{2}$", description="ISO-2 country code", examples=["ES"]
     )
-    max_articles: int = Field(default=5, ge=0, le=20, description="Max articles per trend", examples=[5])
     language: str = Field(default=settings.default_hl, description="Language code", examples=["en-US"])
-
-    model_config = {"json_schema_extra": {"examples": [{"geo": "US", "max_articles": 5, "language": "en-US"}]}}
-
-
-class SuggestionRequest(BaseModel):
-    keyword: str = Field(..., min_length=2, description="Search keyword", examples=["air fryer"])
-    language: str = Field(default=settings.default_hl, description="Language code", examples=["en-US"])
+    seed_keywords: list[str] = Field(
+        ...,
+        min_length=1,
+        max_length=20,
+        description="Seed keywords to expand into related keywords (1..20)",
+        examples=[["air fryer"]],
+    )
+    limit: int | None = Field(
+        default=None, ge=1, description="Optional cap on the number of related keywords returned", examples=[100]
+    )
 
     model_config = {
         "json_schema_extra": {
             "examples": [
                 {
-                    "keyword": "air fryer",
+                    "location": "ES",
                     "language": "en-US",
+                    "seed_keywords": ["air fryer"],
+                    "limit": 100,
                 }
             ]
         }

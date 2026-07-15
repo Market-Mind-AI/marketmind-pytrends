@@ -1,19 +1,13 @@
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, Field
 
 
-class RequestInfo(BaseModel):
-    keyword: str
-    country: str
-    timeframe: str | None = None
-    language: str
-
-
 class Metadata(BaseModel):
-    provider: str = "Google Trends"
-    library: str = "PyTrends"
+    provider: str = "Google Ads"
+    library: str = "DataForSEO"
     endpoint: str
     execution_time_ms: int
     records: int
@@ -24,181 +18,61 @@ class Metadata(BaseModel):
     collected_at: datetime
 
 
-class InterestOverTimeItem(BaseModel):
-    date: str
-    value: int | float
-    is_partial: bool = False
+class MonthlySearchItem(BaseModel):
+    year: int | None = None
+    month: int | None = None
+    search_volume: int | None = None
 
 
-class InterestOverTimeData(BaseModel):
-    interest_over_time: list[InterestOverTimeItem]
+class SearchVolumeRequestInfo(BaseModel):
+    location: str
+    language: str
+    keywords: list[str]
 
 
-class InterestOverTimeResponse(BaseModel):
-    request: RequestInfo
+class SearchVolumeItem(BaseModel):
+    keyword: str
+    search_volume: int | float | None = None
+    competition: str | None = None
+    competition_index: int | None = None
+    cpc: float | None = None
+    monthly_searches: list[MonthlySearchItem] = Field(default_factory=list)
+
+
+class SearchVolumeData(BaseModel):
+    keywords: list[SearchVolumeItem]
+
+
+class SearchVolumeResponse(BaseModel):
+    request: SearchVolumeRequestInfo
     metadata: Metadata
-    data: InterestOverTimeData
-
-    model_config = {
-        "json_schema_extra": {
-            "examples": [
-                {
-                    "request": {
-                        "keyword": "air fryer",
-                        "country": "ES",
-                        "timeframe": "today 12-m",
-                        "language": "en-US",
-                    },
-                    "metadata": {
-                        "provider": "Google Trends",
-                        "library": "PyTrends",
-                        "endpoint": "interest_over_time",
-                        "execution_time_ms": 512,
-                        "records": 52,
-                        "stored": True,
-                        "ingestion_run_id": "550e8400-e29b-41d4-a716-446655440000",
-                        "trend_request_id": "550e8400-e29b-41d4-a716-446655440001",
-                        "status": "success",
-                        "collected_at": "2026-06-29T10:00:00Z",
-                    },
-                    "data": {"interest_over_time": [{"date": "2025-06-01", "value": 54, "is_partial": False}]},
-                }
-            ]
-        }
-    }
+    data: SearchVolumeData
 
 
-class RegionItem(BaseModel):
-    region: str
-    value: int | float
+class KeywordsForKeywordsRequestInfo(BaseModel):
+    location: str
+    language: str
+    seed_keywords: list[str]
+    limit: int | None = None
 
 
-class InterestByRegionData(BaseModel):
-    regions: list[RegionItem]
+class RelatedKeywordItem(BaseModel):
+    seed_keyword: str
+    keyword: str
+    search_volume: int | float | None = None
+    competition_index: int | None = None
+    cpc: float | None = None
+    monthly_searches: list[MonthlySearchItem] = Field(default_factory=list)
 
 
-class InterestByRegionResponse(BaseModel):
-    request: RequestInfo
+class KeywordsForKeywordsData(BaseModel):
+    keywords: list[RelatedKeywordItem]
+
+
+class KeywordsForKeywordsResponse(BaseModel):
+    request: KeywordsForKeywordsRequestInfo
     metadata: Metadata
-    data: InterestByRegionData
-
-
-class CountryItem(BaseModel):
-    country: str
-    term: str
-    term_language: str
-    value: int | float
-
-
-class InterestByCountryData(BaseModel):
-    countries: list[CountryItem]
-
-
-class InterestByCountryResponse(BaseModel):
-    request: RequestInfo
-    metadata: Metadata
-    data: InterestByCountryData
-
-
-class RegionWorldwideItem(BaseModel):
-    country: str
-    region_code: str
-    region_name: str | None = None
-    term: str
-    term_language: str
-    value: int | float
-
-
-class InterestByRegionWorldwideData(BaseModel):
-    regions: list[RegionWorldwideItem]
-
-
-class InterestByRegionWorldwideResponse(BaseModel):
-    request: RequestInfo
-    metadata: Metadata
-    data: InterestByRegionWorldwideData
-
-
-class QueryItem(BaseModel):
-    query: str
-    value: int | float | None = None
-
-
-class RelatedQueriesData(BaseModel):
-    top: list[QueryItem]
-    rising: list[QueryItem]
-
-
-class RelatedQueriesResponse(BaseModel):
-    request: RequestInfo
-    metadata: Metadata
-    data: RelatedQueriesData
-
-
-class TopicItem(BaseModel):
-    topic: str
-    mid: str | None = None
-    value: int | float | None = None
-
-
-class RelatedTopicsData(BaseModel):
-    top: list[TopicItem]
-    rising: list[TopicItem]
-
-
-class RelatedTopicsResponse(BaseModel):
-    request: RequestInfo
-    metadata: Metadata
-    data: RelatedTopicsData
-
-
-class SuggestionItem(BaseModel):
-    title: str
-    type: str | None = None
-    mid: str | None = None
-
-
-class SuggestionsData(BaseModel):
-    suggestions: list[SuggestionItem]
-
-
-class SuggestionsResponse(BaseModel):
-    request: RequestInfo
-    metadata: Metadata
-    data: SuggestionsData
-
-
-class TrendingRssArticle(BaseModel):
-    title: str | None = None
-    url: str | None = None
-    source: str | None = None
-    snippet: str | None = None
-
-
-class TrendingRssItem(BaseModel):
-    title: str
-    traffic: int | None = None
-    description: str | None = None
-    pub_date: str | None = None
-    link: str | None = None
-    articles: list[TrendingRssArticle] = Field(default_factory=list)
-    article_count: int | None = None
-
-
-class TrendingRssData(BaseModel):
-    trends: list[TrendingRssItem]
-
-
-class TrendingRssResponse(BaseModel):
-    request: RequestInfo
-    metadata: Metadata
-    data: TrendingRssData
-
-
-class CategoriesResponse(BaseModel):
-    request: RequestInfo
-    metadata: Metadata
-    data: dict
+    data: KeywordsForKeywordsData
 
 
 class HealthResponse(BaseModel):
@@ -215,24 +89,9 @@ class IngestionRunResponse(BaseModel):
     started_at: datetime
     finished_at: datetime | None = None
     execution_time_ms: int | None = None
-    request_payload: dict
+    request_payload: dict[str, Any]
     error_message: str | None = None
     created_at: datetime
-
-
-class TrendRequestDetailItem(BaseModel):
-    date: str | None = None
-    value: int | float | None = None
-    is_partial: bool | None = None
-    region: str | None = None
-    query: str | None = None
-    query_type: str | None = None
-    topic: str | None = None
-    topic_type: str | None = None
-    topic_mid: str | None = None
-    title: str | None = None
-    type: str | None = None
-    mid: str | None = None
 
 
 class TrendRequestResponse(BaseModel):
@@ -244,7 +103,7 @@ class TrendRequestResponse(BaseModel):
     timeframe: str | None = None
     endpoint: str
     created_at: datetime
-    data: list[TrendRequestDetailItem] = Field(default_factory=list)
+    data: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ErrorResponse(BaseModel):

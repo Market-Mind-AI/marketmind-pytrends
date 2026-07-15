@@ -4,10 +4,10 @@ from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_session
-from app.services.trends_service import TrendsService
+from app.services.keywords_data_service import KeywordsDataService
 
 
-async def get_trends_service(
+async def get_keywords_data_service(
     session: AsyncSession = Depends(get_session),
-) -> AsyncGenerator[TrendsService, None]:
-    yield TrendsService(session)
+) -> AsyncGenerator[KeywordsDataService, None]:
+    yield KeywordsDataService(session)

@@ -1,44 +1,52 @@
 import pytest
 from pydantic import ValidationError
 
-from app.schemas.requests import SuggestionRequest, TrendRequest
+from app.schemas.requests import KeywordsForKeywordsRequest, SearchVolumeRequest
 
 
-class TestTrendRequest:
+class TestSearchVolumeRequest:
     def test_valid_request(self) -> None:
-        req = TrendRequest(keyword="air fryer", country="ES")
-        assert req.keyword == "air fryer"
-        assert req.country == "ES"
-        assert req.timeframe == "today 12-m"
+        req = SearchVolumeRequest(location="ES", keywords=["air fryer", "robot vacuum"])
+        assert req.location == "ES"
         assert req.language == "en-US"
+        assert req.keywords == ["air fryer", "robot vacuum"]
 
-    def test_keyword_min_length(self) -> None:
+    def test_location_must_be_iso2(self) -> None:
         with pytest.raises(ValidationError):
-            TrendRequest(keyword="a", country="ES")
+            SearchVolumeRequest(location="ESP", keywords=["air fryer"])
 
-    def test_country_must_be_iso2(self) -> None:
+    def test_location_must_be_uppercase(self) -> None:
         with pytest.raises(ValidationError):
-            TrendRequest(keyword="air fryer", country="ESP")
+            SearchVolumeRequest(location="es", keywords=["air fryer"])
 
-    def test_country_must_be_uppercase(self) -> None:
+    def test_keywords_required_non_empty(self) -> None:
         with pytest.raises(ValidationError):
-            TrendRequest(keyword="air fryer", country="es")
+            SearchVolumeRequest(location="ES", keywords=[])
 
-    def test_custom_timeframe(self) -> None:
-        req = TrendRequest(keyword="air fryer", country="US", timeframe="today 3-m")
-        assert req.timeframe == "today 3-m"
+    def test_keywords_capped_at_1000(self) -> None:
+        with pytest.raises(ValidationError):
+            SearchVolumeRequest(location="ES", keywords=[f"kw{i}" for i in range(1001)])
 
     def test_custom_language(self) -> None:
-        req = TrendRequest(keyword="air fryer", country="BR", language="pt-BR")
+        req = SearchVolumeRequest(location="BR", language="pt-BR", keywords=["air fryer"])
         assert req.language == "pt-BR"
 
 
-class TestSuggestionRequest:
+class TestKeywordsForKeywordsRequest:
     def test_valid_request(self) -> None:
-        req = SuggestionRequest(keyword="air fryer")
-        assert req.keyword == "air fryer"
-        assert req.language == "en-US"
+        req = KeywordsForKeywordsRequest(location="ES", seed_keywords=["air fryer"], limit=100)
+        assert req.location == "ES"
+        assert req.seed_keywords == ["air fryer"]
+        assert req.limit == 100
 
-    def test_keyword_min_length(self) -> None:
+    def test_limit_optional(self) -> None:
+        req = KeywordsForKeywordsRequest(location="ES", seed_keywords=["air fryer"])
+        assert req.limit is None
+
+    def test_seeds_capped_at_20(self) -> None:
         with pytest.raises(ValidationError):
-            SuggestionRequest(keyword="a")
+            KeywordsForKeywordsRequest(location="ES", seed_keywords=[f"kw{i}" for i in range(21)])
+
+    def test_seeds_required_non_empty(self) -> None:
+        with pytest.raises(ValidationError):
+            KeywordsForKeywordsRequest(location="ES", seed_keywords=[])

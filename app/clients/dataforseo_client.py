@@ -1,97 +1,105 @@
-"""DataForSEO fallback for PyTrendsClient (app/clients/pytrends_client.py).
-Only called after PyTrends' own retries (RETRY_DECORATOR there) are
-exhausted — this is a resilience net for the highest-weighted data source
-(Demand dimension), not a primary path. Uses the official `dataforseo-client`
-SDK (sync, like `pytrends_modern` — no asyncio.to_thread, matching this
-project's existing style of calling sync clients directly from async
-service methods).
+"""DataForSEO Google Ads keyword-data client.
 
-A single Explore Live call with <=1 keyword returns interest-over-time,
-interest-by-region, and related-queries data together (confirmed against
-the real API docs 2026-07-08, not assumed) — one DataForSEO task covers
-everything marketmind-core's analysis pipeline actually consumes
-(_PYTRENDS_INDICATOR_CODES in analysis_service.py), instead of 3 separate
-calls. related_topics is fetched by neither PyTrends nor this fallback
-today — nothing in the automated pipeline consumes it.
+Collects Google Ads Search Volume and Keywords-for-Keywords data via the
+official `dataforseo-client` SDK (sync — called directly from the async
+service methods, matching this project's existing style of driving sync
+clients from async code). Google Trends collection has been retired; this
+client now targets the Google Ads endpoints (KeywordsDataApi.google_ads_*).
 
-Sandbox vs Live is a plain host swap (settings.dataforseo_use_sandbox) —
-same auth, same request/response shape, sandbox never bills and returns
-mock data (see scripts/verify_dataforseo_locations.py docstring for the
-same sandbox/live note applied to the locations endpoint).
+Sandbox vs Live is a plain host swap (settings.dataforseo_use_sandbox) — same
+auth, same request/response shape; sandbox never bills and returns mock data
+(see scripts/verify_dataforseo_locations.py for the same sandbox/live note).
 """
 
-import re
-from datetime import UTC, datetime, timedelta
+import time
 from typing import Any
 
-import pandas as pd
 from dataforseo_client import api_client as dfs_api_provider
 from dataforseo_client import configuration as dfs_config
 from dataforseo_client.api.keywords_data_api import KeywordsDataApi
-from dataforseo_client.models.google_trends_google_trends_graph_element_item import (
-    GoogleTrendsGoogleTrendsGraphElementItem,
+from dataforseo_client.models.keywords_data_google_ads_keywords_for_keywords_live_request_info import (
+    KeywordsDataGoogleAdsKeywordsForKeywordsLiveRequestInfo,
 )
-from dataforseo_client.models.google_trends_google_trends_map_element_item import (
-    GoogleTrendsGoogleTrendsMapElementItem,
-)
-from dataforseo_client.models.google_trends_google_trends_queries_list_element_item import (
-    GoogleTrendsGoogleTrendsQueriesListElementItem,
-)
-from dataforseo_client.models.keywords_data_google_trends_explore_live_request_info import (
-    KeywordsDataGoogleTrendsExploreLiveRequestInfo,
+from dataforseo_client.models.keywords_data_google_ads_search_volume_live_request_info import (
+    KeywordsDataGoogleAdsSearchVolumeLiveRequestInfo,
 )
 from dataforseo_client.rest import ApiException
 
 from app.clients.dataforseo_locations import ISO2_TO_LOCATION_NAME, UNSUPPORTED_ISO2
 from app.core.config import settings
-from app.core.exceptions import DataForSEOClientError
+from app.core.exceptions import (
+    DataForSEOClientError,
+    DataForSEORateLimitError,
+    DataForSEOTimeoutError,
+)
 from app.core.logging import logger
-from app.utils.normalization import build_anchor_batches, merge_anchor_batches
 
 _SANDBOX_HOST = "https://sandbox.dataforseo.com"
 # DataForSEO status codes are 20000-series for success, 40000+ for errors —
-# same convention documented across their whole API, not fallback-specific.
+# same convention documented across their whole API.
 _TASK_ERROR_THRESHOLD = 40000
+_RATE_LIMIT_STATUS = 429
+_TIMEOUT_STATUSES = frozenset({408, 504})
+# Transient upstream/gateway errors worth retrying (DataForSEO returns 502 Bad
+# Gateway under load — a burst of live calls across many countries triggers it).
+# Retried with linear backoff before surfacing as an error (2026-07-15).
+_TRANSIENT_STATUSES = frozenset({500, 502, 503, 504})
 
-# The only shape this project ever actually sends (see
-# app/schemas/requests.py TrendRequest.timeframe default, "today 12-m") —
-# parsed deterministically into an explicit date range DataForSEO needs.
-# Anything else falls back to the last 12 months, always logged so it's
-# never a silent surprise.
-_TIMEFRAME_PATTERN = re.compile(r"^today (\d+)-([my])$")
-
-
-def _timeframe_to_date_range(timeframe: str) -> tuple[str, str]:
-    today = datetime.now(UTC).date()
-    match = _TIMEFRAME_PATTERN.match(timeframe.strip())
-    if match is None:
-        logger.warning(f"Unrecognized timeframe '{timeframe}' for DataForSEO fallback — defaulting to last 12 months")
-        return (today - timedelta(days=365)).isoformat(), today.isoformat()
-    amount, unit = int(match.group(1)), match.group(2)
-    days = amount * 365 if unit == "y" else amount * 30
-    return (today - timedelta(days=days)).isoformat(), today.isoformat()
+SEARCH_VOLUME_ENDPOINT = "google_ads_search_volume_live"
+KEYWORDS_FOR_KEYWORDS_ENDPOINT = "google_ads_keywords_for_keywords_live"
 
 
-def _coerce(value: Any) -> float:
-    """DataForSEO reports regions/points with no data as null; PyTrends
-    reports them as 0 (inc_low_vol=True). Coerce null/None to 0.0 so both
-    providers produce the same shape — and so the DataFrame never carries a
-    NaN, which would later fail JSON persistence (`invalid input syntax for
-    type json: Token "NaN"`) in the raw_api_responses store."""
-    return 0.0 if value is None else float(value)
+def _opt_float(value: Any) -> float | None:
+    """Coerce a DataForSEO numeric field to float, tolerating None/missing/
+    unparseable values by returning None (the metric is simply unknown)."""
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
-def _first_value(values: list[Any] | None) -> float:
-    return _coerce(values[0]) if values else 0.0
+def _opt_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
-def _request_payload(keyword: str, country: str, timeframe: str, language: str) -> dict[str, Any]:
+def _opt_str(value: Any) -> str | None:
+    return None if value is None else str(value)
+
+
+def _monthly_searches(raw: Any) -> list[dict[str, Any]]:
+    """Normalize the trailing-12-months array into plain JSON-serializable
+    dicts {year, month, search_volume}. None entries are skipped."""
+    items: list[dict[str, Any]] = []
+    for entry in raw or []:
+        if entry is None:
+            continue
+        items.append(
+            {
+                "year": _opt_int(getattr(entry, "year", None)),
+                "month": _opt_int(getattr(entry, "month", None)),
+                "search_volume": _opt_int(getattr(entry, "search_volume", None)),
+            }
+        )
+    return items
+
+
+def _result_to_dict(item: Any) -> dict[str, Any]:
+    """Flatten a Google Ads result item into the per-keyword shape shared by
+    both endpoints. Missing numeric fields stay None (nullable in the DB)."""
     return {
-        "keyword": keyword,
-        "country": country,
-        "timeframe": timeframe,
-        "language": language,
-        "provider": "dataforseo_fallback",
+        "keyword": _opt_str(getattr(item, "keyword", None)) or "",
+        "search_volume": _opt_int(getattr(item, "search_volume", None)),
+        "competition": _opt_str(getattr(item, "competition", None)),
+        "competition_index": _opt_int(getattr(item, "competition_index", None)),
+        "cpc": _opt_float(getattr(item, "cpc", None)),
+        "monthly_searches": _monthly_searches(getattr(item, "monthly_searches", None)),
     }
 
 
@@ -109,201 +117,121 @@ class DataForSEOClient:
             )
         return location_name
 
-    def _explore(self, keyword: str, country: str, timeframe: str) -> list[Any]:
+    def _configuration(self) -> Any:
+        host = _SANDBOX_HOST if settings.dataforseo_use_sandbox else None
+        return dfs_config.Configuration(
+            username=settings.dataforseo_login, password=settings.dataforseo_password, host=host
+        )
+
+    def _translate_api_exception(self, exc: ApiException, label: str) -> DataForSEOClientError:
+        status = getattr(exc, "status", None)
+        if status == _RATE_LIMIT_STATUS:
+            return DataForSEORateLimitError(f"DataForSEO rate-limited request for {label}: {exc}")
+        if status in _TIMEOUT_STATUSES:
+            return DataForSEOTimeoutError(f"DataForSEO timed out for {label}: {exc}")
+        return DataForSEOClientError(f"DataForSEO API error for {label}: {exc}")
+
+    def _run_with_retry(self, call: Any, label: str) -> Any:
+        """Run a DataForSEO API call, retrying transient upstream failures
+        (502/503/504/500, timeouts, 429) with linear backoff. A burst of live
+        calls across many countries makes DataForSEO's gateway return 502s;
+        without this a single 502 aborts a whole MarketMind analysis (core has
+        an all-or-nothing completeness gate). Non-transient errors are
+        translated and raised immediately."""
+        last_exc: ApiException | None = None
+        for attempt in range(1, settings.default_retries + 1):
+            try:
+                return call()
+            except ApiException as exc:
+                status = getattr(exc, "status", None)
+                transient = (
+                    status in _TRANSIENT_STATUSES or status == _RATE_LIMIT_STATUS or status in _TIMEOUT_STATUSES
+                )
+                if not transient or attempt == settings.default_retries:
+                    raise self._translate_api_exception(exc, label) from exc
+                last_exc = exc
+                logger.warning(
+                    f"DataForSEO transient error (status={status}) for {label}; "
+                    f"retry {attempt}/{settings.default_retries}"
+                )
+                time.sleep(settings.default_backoff * attempt)
+        raise self._translate_api_exception(last_exc, label)  # pragma: no cover — loop always returns/raises above
+
+    def _extract_results(self, response: Any, label: str) -> list[Any]:
+        tasks = response.tasks or []
+        if not tasks:
+            raise DataForSEOClientError(f"DataForSEO returned no tasks for {label}")
+        task = tasks[0]
+        if task is None:
+            raise DataForSEOClientError(f"DataForSEO returned an empty task for {label}")
+        if task.status_code is not None and task.status_code >= _TASK_ERROR_THRESHOLD:
+            raise DataForSEOClientError(f"DataForSEO task failed ({task.status_code}): {task.status_message}")
+        return [r for r in (task.result or []) if r is not None]
+
+    def search_volume(
+        self, keywords: list[str], country: str, language: str
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """Google Ads Search Volume live for up to 1000 keywords at ONE
+        location. Returns (per-keyword dicts, request_payload)."""
         location_name = self._location_name(country)
-        date_from, date_to = _timeframe_to_date_range(timeframe)
-        host = _SANDBOX_HOST if settings.dataforseo_use_sandbox else None
-        configuration = dfs_config.Configuration(
-            username=settings.dataforseo_login, password=settings.dataforseo_password, host=host
+        label = f"search_volume {keywords!r} in '{country}'"
+        request = KeywordsDataGoogleAdsSearchVolumeLiveRequestInfo(
+            keywords=list(keywords),
+            location_name=location_name,
+            language_code=language,
         )
-        try:
-            with dfs_api_provider.ApiClient(configuration) as api_client:
-                api = KeywordsDataApi(api_client)
-                response = api.google_trends_explore_live(
-                    [
-                        KeywordsDataGoogleTrendsExploreLiveRequestInfo(
-                            keywords=[keyword],
-                            location_name=location_name,
-                            date_from=date_from,
-                            date_to=date_to,
-                            item_types=["google_trends_graph", "google_trends_map", "google_trends_queries_list"],
-                        )
-                    ]
-                )
-        except ApiException as exc:
-            raise DataForSEOClientError(f"DataForSEO API error for keyword '{keyword}': {exc}") from exc
-
-        tasks = response.tasks or []
-        if not tasks:
-            raise DataForSEOClientError(f"DataForSEO returned no tasks for keyword '{keyword}' in '{country}'")
-        task = tasks[0]
-        if task is None:
-            raise DataForSEOClientError(f"DataForSEO returned an empty task for keyword '{keyword}' in '{country}'")
-        if task.status_code is not None and task.status_code >= _TASK_ERROR_THRESHOLD:
-            raise DataForSEOClientError(f"DataForSEO task failed ({task.status_code}): {task.status_message}")
-        if not task.result:
-            raise DataForSEOClientError(f"DataForSEO returned no result for keyword '{keyword}' in '{country}'")
-        return list(task.result[0].items or []) if task.result[0] is not None else []
-
-    def _explore_worldwide(self, keywords: list[str], timeframe: str) -> list[Any]:
-        """Worldwide variant of `_explore` — omits location_name entirely, so
-        DataForSEO returns global (unrestricted) Google Trends data. Compares up
-        to 5 keywords in one call on a single common axis. Best-effort: if the
-        API rejects a location-less request or returns nothing, the caller
-        surfaces a DataForSEOClientError (the indicator is treated as unavailable
-        rather than fabricated)."""
-        label = ", ".join(keywords)
-        date_from, date_to = _timeframe_to_date_range(timeframe)
-        host = _SANDBOX_HOST if settings.dataforseo_use_sandbox else None
-        configuration = dfs_config.Configuration(
-            username=settings.dataforseo_login, password=settings.dataforseo_password, host=host
-        )
-        try:
-            with dfs_api_provider.ApiClient(configuration) as api_client:
-                api = KeywordsDataApi(api_client)
-                response = api.google_trends_explore_live(
-                    [
-                        KeywordsDataGoogleTrendsExploreLiveRequestInfo(
-                            keywords=keywords,
-                            date_from=date_from,
-                            date_to=date_to,
-                            item_types=["google_trends_map"],
-                        )
-                    ]
-                )
-        except ApiException as exc:
-            raise DataForSEOClientError(f"DataForSEO API error for keywords '{label}' worldwide: {exc}") from exc
-
-        tasks = response.tasks or []
-        if not tasks:
-            raise DataForSEOClientError(f"DataForSEO returned no tasks for keywords '{label}' worldwide")
-        task = tasks[0]
-        if task is None:
-            raise DataForSEOClientError(f"DataForSEO returned an empty task for keywords '{label}' worldwide")
-        if task.status_code is not None and task.status_code >= _TASK_ERROR_THRESHOLD:
-            raise DataForSEOClientError(f"DataForSEO task failed ({task.status_code}): {task.status_message}")
-        if not task.result:
-            raise DataForSEOClientError(f"DataForSEO returned no result for keywords '{label}' worldwide")
-        return list(task.result[0].items or []) if task.result[0] is not None else []
-
-    def _worldwide_request_payload(self, terms: list[tuple[str, str]], timeframe: str, language: str) -> dict[str, Any]:
-        return {
-            "terms": [{"term": t, "language": lang} for t, lang in terms],
-            "timeframe": timeframe,
-            "language": language,
-            "provider": "dataforseo_fallback",
+        payload: dict[str, Any] = {
+            "keywords": list(keywords),
+            "country": country,
+            "location_name": location_name,
+            "language_code": language,
+            "provider": "dataforseo_google_ads",
+            "endpoint": SEARCH_VOLUME_ENDPOINT,
         }
+        def _do() -> Any:
+            with dfs_api_provider.ApiClient(self._configuration()) as api_client:
+                return KeywordsDataApi(api_client).google_ads_search_volume_live([request])
 
-    def _melt_worldwide_map(self, items: list[Any], batch: list[tuple[str, str]]) -> pd.DataFrame:
-        """Melt a multi-keyword worldwide map item into long rows
-        {country, term, term_language, value}. Each map point's `values` list is
-        aligned with the queried keyword order; null values coerce to 0.0.
-        Country is the ISO-2 geo_id when present, otherwise geo_name."""
-        map_item = next((i for i in items if isinstance(i, GoogleTrendsGoogleTrendsMapElementItem)), None)
-        if map_item is None or not map_item.data:
-            batch_terms = [t for t, _ in batch]
-            raise DataForSEOClientError(f"DataForSEO returned no worldwide interest-by-country data for {batch_terms}")
+        response = self._run_with_retry(_do, label)
+        results = self._extract_results(response, label)
+        return [_result_to_dict(item) for item in results], payload
 
-        rows: list[dict[str, Any]] = []
-        for point in map_item.data:
-            if point is None or point.geo_name is None:
-                continue
-            country = str(point.geo_id) if point.geo_id else str(point.geo_name)
-            values = point.values or []
-            for idx, (term, term_language) in enumerate(batch):
-                value = _coerce(values[idx]) if idx < len(values) else 0.0
-                rows.append({"country": country, "term": term, "term_language": term_language, "value": value})
-        return pd.DataFrame(rows, columns=["country", "term", "term_language", "value"])
-
-    def interest_by_country(
-        self, terms: list[tuple[str, str]], timeframe: str, language: str
-    ) -> tuple[pd.DataFrame, dict[str, Any]]:
-        # DataForSEO's Explore compares up to 5 keywords per call on one common
-        # axis; >5 terms are anchor-chained exactly like the PyTrends path so the
-        # whole matrix stays on a single comparable axis.
-        anchor_term = terms[0][0] if terms else ""
-        frames: list[pd.DataFrame] = []
-        for batch in build_anchor_batches(terms):
-            items = self._explore_worldwide([t for t, _ in batch], timeframe)
-            frames.append(self._melt_worldwide_map(items, batch))
-        merged = merge_anchor_batches(frames, anchor_term)
-        return merged, self._worldwide_request_payload(terms, timeframe, language)
-
-    def interest_by_region_worldwide(
-        self, terms: list[tuple[str, str]], timeframe: str, language: str
-    ) -> tuple[pd.DataFrame, dict[str, Any]]:
-        # DataForSEO's Google Trends Explore returns a COUNTRY-level map
-        # (`google_trends_map` keyed by ISO-2 geo_id), NOT a worldwide
-        # sub-national (ISO-3166-2, e.g. 'US-CA') breakdown. There is no
-        # DataForSEO item type that yields comparable worldwide sub-regions, so
-        # this endpoint has no honest fallback. Rather than fabricate sub-region
-        # rows, raise — the indicator is treated as unavailable when PyTrends is
-        # exhausted (same decision as the map-less paths above).
-        label = ", ".join(t for t, _ in terms)
-        raise DataForSEOClientError(
-            f"DataForSEO cannot provide worldwide sub-national (ISO-3166-2) region data for '{label}' — "
-            "Explore only returns country-level maps."
+    def keywords_for_keywords(
+        self, seed_keywords: list[str], country: str, language: str, limit: int | None
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """Google Ads Keywords-for-Keywords live for up to 20 seed keywords at
+        ONE location. Returns (related-keyword dicts, request_payload). Each
+        related dict carries the same metric fields plus `seed_keyword` (the
+        seed set that produced it). `limit` caps the returned rows client-side
+        (the endpoint itself can return up to 20000)."""
+        location_name = self._location_name(country)
+        label = f"keywords_for_keywords {seed_keywords!r} in '{country}'"
+        request = KeywordsDataGoogleAdsKeywordsForKeywordsLiveRequestInfo(
+            keywords=list(seed_keywords),
+            location_name=location_name,
+            language_code=language,
         )
+        payload: dict[str, Any] = {
+            "seed_keywords": list(seed_keywords),
+            "country": country,
+            "location_name": location_name,
+            "language_code": language,
+            "limit": limit,
+            "provider": "dataforseo_google_ads",
+            "endpoint": KEYWORDS_FOR_KEYWORDS_ENDPOINT,
+        }
+        def _do() -> Any:
+            with dfs_api_provider.ApiClient(self._configuration()) as api_client:
+                return KeywordsDataApi(api_client).google_ads_keywords_for_keywords_live([request])
 
-    def interest_over_time(
-        self, keyword: str, country: str, timeframe: str, language: str
-    ) -> tuple[pd.DataFrame, dict[str, Any]]:
-        items = self._explore(keyword, country, timeframe)
-        graph = next((i for i in items if isinstance(i, GoogleTrendsGoogleTrendsGraphElementItem)), None)
-        if graph is None or not graph.data:
-            raise DataForSEOClientError(f"DataForSEO returned no interest-over-time data for keyword '{keyword}'")
-
-        rows: list[dict[str, Any]] = []
-        for point in graph.data:
-            if point is None or point.date_from is None:
-                continue
-            rows.append(
-                {"date": point.date_from, "value": _first_value(point.values), "isPartial": bool(point.missing_data)}
-            )
-        df = pd.DataFrame(rows).set_index("date").rename(columns={"value": keyword})
-        df.index = pd.to_datetime(df.index)
-        return df, _request_payload(keyword, country, timeframe, language)
-
-    def interest_by_region(
-        self, keyword: str, country: str, timeframe: str, language: str
-    ) -> tuple[pd.DataFrame, dict[str, Any]]:
-        items = self._explore(keyword, country, timeframe)
-        map_item = next((i for i in items if isinstance(i, GoogleTrendsGoogleTrendsMapElementItem)), None)
-        if map_item is None or not map_item.data:
-            raise DataForSEOClientError(f"DataForSEO returned no interest-by-region data for keyword '{keyword}'")
-
-        rows: list[dict[str, Any]] = []
-        for point in map_item.data:
-            if point is None or point.geo_name is None:
-                continue
-            rows.append({"region": point.geo_name, "value": _first_value(point.values)})
-        df = pd.DataFrame(rows).set_index("region").rename(columns={"value": keyword})
-        return df, _request_payload(keyword, country, timeframe, language)
-
-    def related_queries(
-        self, keyword: str, country: str, timeframe: str, language: str
-    ) -> tuple[dict[str, Any], dict[str, Any]]:
-        items = self._explore(keyword, country, timeframe)
-        queries_item = next((i for i in items if isinstance(i, GoogleTrendsGoogleTrendsQueriesListElementItem)), None)
-
-        top_df = pd.DataFrame(columns=["query", "value"])
-        rising_df = pd.DataFrame(columns=["query", "value"])
-        if queries_item is not None and queries_item.data is not None:
-            if queries_item.data.top:
-                top_df = pd.DataFrame(
-                    [
-                        {"query": e.get("query", ""), "value": _coerce(e.get("value"))}
-                        for e in queries_item.data.top
-                        if e
-                    ]
-                )
-            if queries_item.data.rising:
-                rising_df = pd.DataFrame(
-                    [
-                        {"query": e.get("query", ""), "value": _coerce(e.get("value"))}
-                        for e in queries_item.data.rising
-                        if e
-                    ]
-                )
-        data = {keyword: {"top": top_df, "rising": rising_df}}
-        return data, _request_payload(keyword, country, timeframe, language)
+        response = self._run_with_retry(_do, label)
+        results = self._extract_results(response, label)
+        seed_label = ", ".join(seed_keywords)
+        dicts: list[dict[str, Any]] = []
+        for item in results:
+            record = _result_to_dict(item)
+            record["seed_keyword"] = seed_label
+            dicts.append(record)
+        if limit is not None:
+            dicts = dicts[:limit]
+        return dicts, payload
