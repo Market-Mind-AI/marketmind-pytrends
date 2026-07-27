@@ -43,8 +43,11 @@ def _install_api(mock_api_client_cls: MagicMock, mock_keywords_api_cls: MagicMoc
 class TestDataForSEOClientLocations:
     def test_unsupported_country_raises(self) -> None:
         client = DataForSEOClient()
-        with pytest.raises(DataForSEOClientError, match="sanctioned"):
+        with pytest.raises(DataForSEOClientError, match="not available for Google Ads demand"):
             client._location_name("RU")
+        # China is excluded too (Google blocked), with its own reason.
+        with pytest.raises(DataForSEOClientError, match="not available for Google Ads demand"):
+            client._location_name("CN")
 
     def test_unmapped_country_raises(self) -> None:
         client = DataForSEOClient()

@@ -11,10 +11,11 @@ scripts/verify_dataforseo_locations.py once real credentials are set to
 confirm or correct every entry — do not trust this table blindly for a new
 country before that script has checked it.
 
-Russia is deliberately absent: DataForSEO's own docs confirm Russia and
-Belarus are unsupported across all of their services (sanctions), so any
-lookup for "RU" must fail loudly (see dataforseo_client.py), not silently
-guess a name that doesn't exist in their system.
+Russia/Belarus are deliberately absent: DataForSEO's own docs confirm they are
+unsupported across all of their services (sanctions), so any lookup must fail
+loudly (see dataforseo_client.py), not silently guess a name. China is likewise
+excluded (in UNSUPPORTED_ISO2, not here): Google is blocked in mainland China so
+Google Ads returns no representative search volume. See docs/paises-disponiveis.md.
 """
 
 ISO2_TO_LOCATION_NAME: dict[str, str] = {
@@ -23,7 +24,8 @@ ISO2_TO_LOCATION_NAME: dict[str, str] = {
     "BR": "Brazil",
     "CA": "Canada",
     "CL": "Chile",
-    "CN": "China",
+    # China (CN) is intentionally NOT here — see UNSUPPORTED_ISO2 (Google is
+    # blocked in mainland China, so Google Ads returns no representative volume).
     "CO": "Colombia",
     "FR": "France",
     "DE": "Germany",
@@ -41,10 +43,20 @@ ISO2_TO_LOCATION_NAME: dict[str, str] = {
     "KR": "South Korea",
     "ES": "Spain",
     "SE": "Sweden",
-    "TR": "Turkey",
+    # DataForSEO renamed Turkey -> "Turkiye" (the country's 2022 UN rename);
+    # "Turkey" now returns 40501 Invalid Field: location_name (found 2026-07-27).
+    "TR": "Turkiye",
     "GB": "United Kingdom",
     "US": "United States",
 }
 
-# Confirmed via DataForSEO docs (2026-07-08), not a mapping gap to fill in.
-UNSUPPORTED_ISO2 = frozenset({"RU", "BY"})
+# Countries excluded from Google Ads demand collection, each with its reason.
+# Google Ads search volume is only meaningful where Google is the dominant
+# search engine AND DataForSEO serves the location. Excluded countries are NOT
+# offered in the analysis UI (see marketmind-ai country picker) and documented
+# in docs/paises-disponiveis.md. `country in UNSUPPORTED_ISO2` checks the keys.
+UNSUPPORTED_ISO2: dict[str, str] = {
+    "RU": "Russia is unsupported by DataForSEO across all services (sanctions).",
+    "BY": "Belarus is unsupported by DataForSEO across all services (sanctions).",
+    "CN": "Google is blocked in mainland China (Baidu dominates); Google Ads returns no representative search volume.",
+}

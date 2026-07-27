@@ -14,6 +14,7 @@ auth, same request/response shape; sandbox never bills and returns mock data
 import time
 from typing import Any
 
+import urllib3
 from dataforseo_client import api_client as dfs_api_provider
 from dataforseo_client import configuration as dfs_config
 from dataforseo_client.api.keywords_data_api import KeywordsDataApi
@@ -107,7 +108,7 @@ class DataForSEOClient:
     def _location_name(self, country: str) -> str:
         if country in UNSUPPORTED_ISO2:
             raise DataForSEOClientError(
-                f"DataForSEO does not support country '{country}' (sanctioned — confirmed in their own docs)"
+                f"Country '{country}' is not available for Google Ads demand: {UNSUPPORTED_ISO2[country]}"
             )
         location_name = ISO2_TO_LOCATION_NAME.get(country)
         if location_name is None:
@@ -153,6 +154,22 @@ class DataForSEOClient:
                 logger.warning(
                     f"DataForSEO transient error (status={status}) for {label}; "
                     f"retry {attempt}/{settings.default_retries}"
+                )
+                time.sleep(settings.default_backoff * attempt)
+            except (urllib3.exceptions.HTTPError, ConnectionError, TimeoutError, OSError) as exc:
+                # Network-level failures (DNS resolution, connection reset, pool
+                # timeouts) surface as raw urllib3/socket errors, NOT ApiException,
+                # so the clause above never caught them — a single DNS blip
+                # ('Failed to resolve api.dataforseo.com') killed a whole country
+                # with zero retries and aborted the analysis. These are ALWAYS
+                # transient: retry with the same linear backoff so the collector
+                # self-heals instead of failing loudly (system-resilience premise).
+                if attempt == settings.default_retries:
+                    raise DataForSEOClientError(
+                        f"DataForSEO network error for {label} after {attempt} attempts: {exc}"
+                    ) from exc
+                logger.warning(
+                    f"DataForSEO network error for {label}; retry {attempt}/{settings.default_retries}: {exc}"
                 )
                 time.sleep(settings.default_backoff * attempt)
         raise self._translate_api_exception(last_exc, label)  # pragma: no cover — loop always returns/raises above
