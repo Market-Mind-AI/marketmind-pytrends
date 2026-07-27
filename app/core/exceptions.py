@@ -11,5 +11,13 @@ class DataForSEOTimeoutError(DataForSEOClientError):
     """The DataForSEO request timed out (mapped to 504)."""
 
 
+class DataForSEOTransientTaskError(DataForSEOClientError):
+    """DataForSEO returned HTTP 200 but the *task* failed with a server-side
+    status code (5xxxx) — e.g. 50301 when Google's OAuth endpoint momentarily
+    returns 503. Distinct from client-side task errors (4xxxx, permanent) so the
+    retry loop can retry these transient upstream failures instead of aborting a
+    whole analysis on a single blip."""
+
+
 class IngestionError(Exception):
     pass

@@ -111,6 +111,62 @@ class TestSearchVolume:
         with pytest.raises(DataForSEOClientError, match="DataForSEO task failed"):
             client.search_volume(["air fryer"], "ES", "en-US")
 
+    @patch("app.clients.dataforseo_client.settings")
+    @patch("app.clients.dataforseo_client.time.sleep")
+    @patch("app.clients.dataforseo_client.KeywordsDataApi")
+    @patch("app.clients.dataforseo_client.dfs_api_provider.ApiClient")
+    def test_server_task_error_retries_then_succeeds(
+        self,
+        mock_api_client_cls: MagicMock,
+        mock_keywords_api_cls: MagicMock,
+        _mock_sleep: MagicMock,
+        mock_settings: MagicMock,
+    ) -> None:
+        # A 5xxxx task code (e.g. 50301 — Google OAuth 503) is transient: the
+        # first call fails inside the task body, the retry succeeds.
+        mock_settings.default_retries = 3
+        mock_settings.default_backoff = 0
+        mock_settings.dataforseo_use_sandbox = False
+        mock_settings.dataforseo_login = "x"
+        mock_settings.dataforseo_password = "y"
+        mock_api = MagicMock()
+        mock_api.google_ads_search_volume_live.side_effect = [
+            _response_with_results([], status_code=50301),
+            _response_with_results([_result_item()]),
+        ]
+        _install_api(mock_api_client_cls, mock_keywords_api_cls, mock_api)
+
+        client = DataForSEOClient()
+        records, _ = client.search_volume(["air fryer"], "ES", "en-US")
+
+        assert len(records) == 1
+        assert mock_api.google_ads_search_volume_live.call_count == 2
+
+    @patch("app.clients.dataforseo_client.settings")
+    @patch("app.clients.dataforseo_client.time.sleep")
+    @patch("app.clients.dataforseo_client.KeywordsDataApi")
+    @patch("app.clients.dataforseo_client.dfs_api_provider.ApiClient")
+    def test_persistent_server_task_error_exhausts_retries(
+        self,
+        mock_api_client_cls: MagicMock,
+        mock_keywords_api_cls: MagicMock,
+        _mock_sleep: MagicMock,
+        mock_settings: MagicMock,
+    ) -> None:
+        mock_settings.default_retries = 3
+        mock_settings.default_backoff = 0
+        mock_settings.dataforseo_use_sandbox = False
+        mock_settings.dataforseo_login = "x"
+        mock_settings.dataforseo_password = "y"
+        mock_api = MagicMock()
+        mock_api.google_ads_search_volume_live.return_value = _response_with_results([], status_code=50301)
+        _install_api(mock_api_client_cls, mock_keywords_api_cls, mock_api)
+
+        client = DataForSEOClient()
+        with pytest.raises(DataForSEOClientError, match="after 3 attempts"):
+            client.search_volume(["air fryer"], "ES", "en-US")
+        assert mock_api.google_ads_search_volume_live.call_count == 3
+
     @patch("app.clients.dataforseo_client.KeywordsDataApi")
     @patch("app.clients.dataforseo_client.dfs_api_provider.ApiClient")
     def test_rate_limit_maps_to_rate_limit_error(

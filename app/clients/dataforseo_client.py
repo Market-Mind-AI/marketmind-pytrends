@@ -32,6 +32,7 @@ from app.core.exceptions import (
     DataForSEOClientError,
     DataForSEORateLimitError,
     DataForSEOTimeoutError,
+    DataForSEOTransientTaskError,
 )
 from app.core.logging import logger
 
@@ -39,6 +40,11 @@ _SANDBOX_HOST = "https://sandbox.dataforseo.com"
 # DataForSEO status codes are 20000-series for success, 40000+ for errors —
 # same convention documented across their whole API.
 _TASK_ERROR_THRESHOLD = 40000
+# DataForSEO task-level status codes follow HTTP-like semantics: 4xxxx are
+# client errors (bad params — permanent), 5xxxx are server-side errors
+# (transient — e.g. 50301 when Google's OAuth endpoint momentarily returns 503).
+# Retry the 5xxxx class the same way we retry HTTP 5xx gateway errors.
+_TASK_SERVER_ERROR_THRESHOLD = 50000
 _RATE_LIMIT_STATUS = 429
 _TIMEOUT_STATUSES = frozenset({408, 504})
 # Transient upstream/gateway errors worth retrying (DataForSEO returns 502 Bad
@@ -172,6 +178,19 @@ class DataForSEOClient:
                     f"DataForSEO network error for {label}; retry {attempt}/{settings.default_retries}: {exc}"
                 )
                 time.sleep(settings.default_backoff * attempt)
+            except DataForSEOTransientTaskError as exc:
+                # HTTP 200 but the task failed with a 5xxxx server-side code
+                # (e.g. 50301 — Google OAuth 503). Same transient treatment: a
+                # single upstream blip must not abort the whole analysis.
+                if attempt == settings.default_retries:
+                    raise DataForSEOClientError(
+                        f"DataForSEO task failed for {label} after {attempt} attempts: {exc}"
+                    ) from exc
+                logger.warning(
+                    f"DataForSEO transient task error for {label}; "
+                    f"retry {attempt}/{settings.default_retries}: {exc}"
+                )
+                time.sleep(settings.default_backoff * attempt)
         raise self._translate_api_exception(last_exc, label)  # pragma: no cover — loop always returns/raises above
 
     def _extract_results(self, response: Any, label: str) -> list[Any]:
@@ -182,7 +201,11 @@ class DataForSEOClient:
         if task is None:
             raise DataForSEOClientError(f"DataForSEO returned an empty task for {label}")
         if task.status_code is not None and task.status_code >= _TASK_ERROR_THRESHOLD:
-            raise DataForSEOClientError(f"DataForSEO task failed ({task.status_code}): {task.status_message}")
+            message = f"DataForSEO task failed ({task.status_code}): {task.status_message}"
+            if task.status_code >= _TASK_SERVER_ERROR_THRESHOLD:
+                # Server-side (5xxxx) — transient upstream blip; let the retry loop handle it.
+                raise DataForSEOTransientTaskError(message)
+            raise DataForSEOClientError(message)
         return [r for r in (task.result or []) if r is not None]
 
     def search_volume(
@@ -207,10 +230,10 @@ class DataForSEOClient:
         }
         def _do() -> Any:
             with dfs_api_provider.ApiClient(self._configuration()) as api_client:
-                return KeywordsDataApi(api_client).google_ads_search_volume_live([request])
+                response = KeywordsDataApi(api_client).google_ads_search_volume_live([request])
+            return self._extract_results(response, label)
 
-        response = self._run_with_retry(_do, label)
-        results = self._extract_results(response, label)
+        results = self._run_with_retry(_do, label)
         return [_result_to_dict(item) for item in results], payload
 
     def keywords_for_keywords(
@@ -239,10 +262,10 @@ class DataForSEOClient:
         }
         def _do() -> Any:
             with dfs_api_provider.ApiClient(self._configuration()) as api_client:
-                return KeywordsDataApi(api_client).google_ads_keywords_for_keywords_live([request])
+                response = KeywordsDataApi(api_client).google_ads_keywords_for_keywords_live([request])
+            return self._extract_results(response, label)
 
-        response = self._run_with_retry(_do, label)
-        results = self._extract_results(response, label)
+        results = self._run_with_retry(_do, label)
         seed_label = ", ".join(seed_keywords)
         dicts: list[dict[str, Any]] = []
         for item in results:
