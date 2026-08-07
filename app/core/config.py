@@ -1,4 +1,8 @@
+from urllib.parse import quote
+
 from pydantic_settings import BaseSettings
+
+from app.db.ssl_config import sslmode_query_suffix
 
 
 class Settings(BaseSettings):
@@ -11,6 +15,12 @@ class Settings(BaseSettings):
     database_name: str = "marketmind_pytrends"
     database_user: str = "marketmind"
     database_password: str = "marketmind_password"
+
+    # TLS for the Postgres connection. "disable" keeps local docker-compose
+    # working unchanged; Azure Database for PostgreSQL Flexible Server needs at
+    # least "require" because it refuses plaintext connections
+    # (`require_secure_transport = ON`). See app/db/ssl_config.py.
+    database_ssl_mode: str = "disable"
 
     default_hl: str = "en-US"
     default_tz: int = 0
@@ -50,15 +60,19 @@ class Settings(BaseSettings):
     @property
     def database_url(self) -> str:
         return (
-            f"postgresql+asyncpg://{self.database_user}:{self.database_password}"
+            f"postgresql+asyncpg://{self.database_user}:{quote(self.database_password, safe='')}"
             f"@{self.database_host}:{self.database_port}/{self.database_name}"
         )
 
     @property
     def database_url_sync(self) -> str:
+        # Alembic runs through psycopg2, which reads `sslmode` straight off
+        # the DSN. The async engine cannot — it gets an SSLContext instead,
+        # built from the same setting in app/db/ssl_config.py.
         return (
-            f"postgresql://{self.database_user}:{self.database_password}"
+            f"postgresql://{self.database_user}:{quote(self.database_password, safe='')}"
             f"@{self.database_host}:{self.database_port}/{self.database_name}"
+            f"{sslmode_query_suffix(self.database_ssl_mode)}"
         )
 
 
