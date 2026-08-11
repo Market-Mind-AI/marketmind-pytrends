@@ -1,3 +1,4 @@
+import asyncio
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -50,7 +51,28 @@ class KeywordsDataService:
             language=request.language,
         )
         try:
-            records, req_payload = self._client.search_volume(
+            # asyncio.to_thread, not a direct call. DataForSEOClient's methods are
+            # plain `def` — the SDK underneath is synchronous — so invoking one
+            # from a coroutine blocks the event loop for the entire round trip to
+            # Google Ads. Nothing else in this process gets served while it runs,
+            # including GET /health.
+            #
+            # That was not a theoretical cost. In the cluster the liveness probe
+            # tolerates 30s x 3 = 90s of silence, and a keywords_for_keywords call
+            # measured 120s, so the kubelet killed the container mid-collection
+            # every single time: 'Liveness probe failed: context deadline
+            # exceeded' -> 'Container app failed liveness probe, will be
+            # restarted' -> exit 137. The task failed, every later task in the
+            # same analysis failed with ConnectError against a pod that no longer
+            # existed, and the next analysis retried the same doomed work. Any
+            # collection slower than 90s could never succeed.
+            #
+            # Handing the blocking call to a worker thread keeps the loop free to
+            # answer probes while Google takes its time. It is also what makes
+            # concurrent collection possible at all — a blocked loop serialises
+            # everything regardless of how the caller fans out.
+            records, req_payload = await asyncio.to_thread(
+                self._client.search_volume,
                 keywords=request.keywords,
                 country=request.location,
                 language=request.language,
@@ -97,7 +119,10 @@ class KeywordsDataService:
             language=request.language,
         )
         try:
-            records, req_payload = self._client.keywords_for_keywords(
+            # Same blocking-call problem as search_volume above, and this is the
+            # method that actually triggered the kill loop — see the note there.
+            records, req_payload = await asyncio.to_thread(
+                self._client.keywords_for_keywords,
                 seed_keywords=request.seed_keywords,
                 country=request.location,
                 language=request.language,
