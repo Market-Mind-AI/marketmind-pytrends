@@ -57,3 +57,30 @@ class KeywordsForKeywordsRequest(BaseModel):
             ]
         }
     }
+
+
+class StoredSearchVolumeRequest(BaseModel):
+    """A read, not a collection. Nothing is fetched from DataForSEO and nothing
+    is billed.
+
+    It is a POST because the keyword list is the same size as a collection's --
+    up to a thousand terms -- and a thousand of them do not fit in a query
+    string.
+    """
+
+    location: str = Field(
+        ..., min_length=2, max_length=2, pattern=r"^[A-Z]{2}$", description="ISO-2 country code", examples=["ES"]
+    )
+    keywords: list[str] = Field(
+        ...,
+        min_length=1,
+        max_length=1000,
+        description="Keywords to look up in what is already stored (1..1000)",
+        examples=[["air fryer", "freidora de aire"]],
+    )
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [{"location": "ES", "keywords": ["air fryer", "freidora de aire"]}]
+        }
+    }

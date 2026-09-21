@@ -11,7 +11,7 @@ from app.repositories.keyword_related_repository import KeywordRelatedRepository
 from app.repositories.keyword_search_volume_repository import KeywordSearchVolumeRepository
 from app.repositories.raw_api_response_repository import RawApiResponseRepository
 from app.repositories.trend_request_repository import TrendRequestRepository
-from app.schemas.requests import KeywordsForKeywordsRequest, SearchVolumeRequest
+from app.schemas.requests import KeywordsForKeywordsRequest, SearchVolumeRequest, StoredSearchVolumeRequest
 from app.schemas.responses import (
     KeywordsForKeywordsData,
     KeywordsForKeywordsRequestInfo,
@@ -22,6 +22,12 @@ from app.schemas.responses import (
     SearchVolumeItem,
     SearchVolumeRequestInfo,
     SearchVolumeResponse,
+    StoredRelatedData,
+    StoredRelatedItem,
+    StoredRelatedResponse,
+    StoredSearchVolumeData,
+    StoredSearchVolumeItem,
+    StoredSearchVolumeResponse,
 )
 from app.utils.time import elapsed_ms, utc_now
 
@@ -263,4 +269,76 @@ class KeywordsDataService:
             f"endpoint={endpoint} | keyword={keyword} | location={location} | "
             f"ingestion_run_id={run_id} | execution_time_ms={exec_time} | "
             f"status=failed | error={error}"
+        )
+
+    # -- Read (what was collected, without opening this service's database) --
+
+    async def read_stored_search_volume(self, request: StoredSearchVolumeRequest) -> StoredSearchVolumeResponse:
+        """What is already stored for these keywords, and which of them are missing.
+
+        Nothing is fetched and nothing is billed. This is the seam that lets a
+        caller use collected demand without opening this service's database --
+        reading another service's tables couples the reader to a schema it does
+        not own, and this one changed shape entirely when the source moved from
+        Trends to Google Ads.
+
+        `missing` is the actionable half. It is exactly the set that still needs
+        collecting, and deriving it outside would go subtly wrong: the match is
+        case-insensitive because DataForSEO lowercases what it stores, so a
+        curated term with capitals looks missing forever and is re-downloaded
+        every run, at real cost per call.
+        """
+        rows = await self._sv_repo.latest_by_keywords(location=request.location, keywords=request.keywords)
+        found = {row.keyword.strip().lower() for row in rows}
+        missing = [k for k in request.keywords if k.strip().lower() not in found]
+
+        return StoredSearchVolumeResponse(
+            data=StoredSearchVolumeData(
+                location=request.location,
+                requested=request.keywords,
+                missing=missing,
+                keywords=[
+                    StoredSearchVolumeItem(
+                        keyword=row.keyword,
+                        location=row.location,
+                        language=row.language,
+                        search_volume=None if row.search_volume is None else float(row.search_volume),
+                        competition=row.competition,
+                        competition_index=row.competition_index,
+                        cpc=None if row.cpc is None else float(row.cpc),
+                        monthly_searches=row.monthly_searches or [],
+                        collected_at=row.created_at,
+                    )
+                    for row in rows
+                ],
+            )
+        )
+
+    async def read_stored_related(self, *, location: str, seed_keyword: str) -> StoredRelatedResponse:
+        """The related keywords already stored for one seed in one location.
+
+        One row per related keyword, the most recently collected. The table
+        keeps every collection, so a keyword returned by three runs would
+        otherwise reach the caller three times and be counted three times.
+        """
+        rows = await self._kr_repo.latest_by_seed(location=location, seed_keyword=seed_keyword)
+        return StoredRelatedResponse(
+            data=StoredRelatedData(
+                location=location,
+                seed_keyword=seed_keyword,
+                keywords=[
+                    StoredRelatedItem(
+                        seed_keyword=row.seed_keyword,
+                        keyword=row.keyword,
+                        location=row.location,
+                        language=row.language,
+                        search_volume=None if row.search_volume is None else float(row.search_volume),
+                        competition_index=row.competition_index,
+                        cpc=None if row.cpc is None else float(row.cpc),
+                        monthly_searches=row.monthly_searches or [],
+                        collected_at=row.created_at,
+                    )
+                    for row in rows
+                ],
+            )
         )

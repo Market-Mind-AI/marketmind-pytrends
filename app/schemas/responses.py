@@ -109,3 +109,53 @@ class TrendRequestResponse(BaseModel):
 class ErrorResponse(BaseModel):
     detail: str
     ingestion_run_id: UUID | None = None
+
+
+class StoredSearchVolumeItem(BaseModel):
+    keyword: str
+    location: str
+    language: str
+    search_volume: int | float | None = None
+    competition: str | None = None
+    competition_index: int | None = None
+    cpc: float | None = None
+    monthly_searches: list[MonthlySearchItem] = Field(default_factory=list)
+    collected_at: datetime
+
+
+class StoredSearchVolumeData(BaseModel):
+    location: str
+    requested: list[str]
+    # The terms with nothing stored for this location. This is the actionable
+    # half of the answer: it is exactly what a collection still needs, and
+    # working it out from the gap between what was asked and what came back is
+    # the kind of derivation every caller would get subtly wrong (the match is
+    # case-insensitive, the request is not).
+    missing: list[str]
+    keywords: list[StoredSearchVolumeItem]
+
+
+class StoredSearchVolumeResponse(BaseModel):
+    data: StoredSearchVolumeData
+
+
+class StoredRelatedItem(BaseModel):
+    seed_keyword: str
+    keyword: str
+    location: str
+    language: str
+    search_volume: int | float | None = None
+    competition_index: int | None = None
+    cpc: float | None = None
+    monthly_searches: list[MonthlySearchItem] = Field(default_factory=list)
+    collected_at: datetime
+
+
+class StoredRelatedData(BaseModel):
+    location: str
+    seed_keyword: str
+    keywords: list[StoredRelatedItem]
+
+
+class StoredRelatedResponse(BaseModel):
+    data: StoredRelatedData

@@ -45,3 +45,21 @@ class KeywordRelatedRepository:
             select(KeywordRelated).where(KeywordRelated.trend_request_id == trend_request_id)
         )
         return list(result.scalars().all())
+
+    async def latest_by_seed(self, *, location: str, seed_keyword: str) -> list[KeywordRelated]:
+        """The freshest stored related keyword per keyword, for one seed and location.
+
+        One row per related keyword, most recently collected. The table keeps
+        every collection, so without DISTINCT ON a keyword returned by three
+        runs reaches the caller three times and is counted three times.
+        """
+        keyword = KeywordRelated.keyword
+        stmt = (
+            select(KeywordRelated)
+            .where(KeywordRelated.location == location)
+            .where(KeywordRelated.seed_keyword == seed_keyword)
+            .distinct(keyword)
+            .order_by(keyword, KeywordRelated.created_at.desc())
+        )
+        result = await self._session.execute(stmt)
+        return list(result.scalars().all())
