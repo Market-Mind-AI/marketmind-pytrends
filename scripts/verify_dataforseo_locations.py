@@ -1,10 +1,11 @@
 """One-off, manually-run verification for app/clients/dataforseo_locations.py.
 
 The ISO2_TO_LOCATION_NAME table was written from standard English country
-names, NOT confirmed against DataForSEO's own location catalog (that
-required a funded/real credential we didn't have at the time). Run this
-once real DATAFORSEO_LOGIN/DATAFORSEO_PASSWORD are set in .env, to catch
-any name DataForSEO doesn't recognize the way this project guessed it.
+names and confirmed against DataForSEO's own catalog on 2026-09-22, once a
+funded credential existed: every one of the twenty-four entries matches.
+
+It also answers a second question, which is what it is worth running for now:
+which countries DataForSEO covers that this project does not yet analyse.
 
 This hits the *locations* endpoint only — same behavior in sandbox and
 live (it's a static reference list, not billed either way), so there is
@@ -42,7 +43,18 @@ def main() -> int:
         print("DataForSEO returned no locations — check credentials/account status.")
         return 1
 
-    by_iso2 = {loc.country_iso_code: loc.location_name for loc in tasks[0].result if loc and loc.country_iso_code}
+    # SÓ as entradas de país. A lista tem 2.311 localizações e a maioria é
+    # subdivisão — província, estado, município. Sem este filtro, o dicionário
+    # por ISO2 fica com a ÚLTIMA que passou: "Brazil" virava "State of Acre,
+    # Brazil", "United States" virava "Bel Air,California,United States", e as
+    # 23 entradas da tabela eram reportadas como divergentes. Todas corretas.
+    by_iso2 = {
+        loc.country_iso_code: loc.location_name
+        for loc in tasks[0].result
+        if loc and loc.country_iso_code and getattr(loc, "location_type", None) == "Country"
+    }
+
+    print(f"DataForSEO lista {len(by_iso2)} países. A tabela deste projeto tem {len(ISO2_TO_LOCATION_NAME)}.\n")
 
     exit_code = 0
     for iso2, expected_name in ISO2_TO_LOCATION_NAME.items():
@@ -58,10 +70,22 @@ def main() -> int:
 
     for iso2 in UNSUPPORTED_ISO2:
         if iso2 in by_iso2:
+            # Não é erro de dado. Estar no catálogo não é o mesmo que o dado
+            # significar alguma coisa: a China é listada, e o Google é bloqueado
+            # lá, então o volume de busca não representa aquele mercado. A
+            # exclusão é substantiva e a nota existe para que ela seja revista de
+            # olho aberto, não para acusar divergência.
             print(
-                f"NOTE     {iso2}: previously confirmed unsupported, but DataForSEO now lists it as "
-                f"'{by_iso2[iso2]}' — consider adding it back to ISO2_TO_LOCATION_NAME"
+                f"NOTE     {iso2}: DataForSEO lists it as '{by_iso2[iso2]}'. Excluded here for a reason "
+                "that is not coverage — see the docstring in app/clients/dataforseo_locations.py."
             )
+
+    novos = sorted(set(by_iso2) - set(ISO2_TO_LOCATION_NAME) - set(UNSUPPORTED_ISO2))
+    if novos:
+        print(f"\n{len(novos)} países que a DataForSEO cobre e este projeto ainda não analisa.")
+        print("Acrescentar um exige mais que este nome: o idioma em que se busca ali, que é")
+        print("curado por país e decide de que produto a análise fala.")
+        print("  " + " ".join(novos))
 
     return exit_code
 

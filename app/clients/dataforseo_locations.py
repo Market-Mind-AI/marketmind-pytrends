@@ -4,18 +4,25 @@ Explore endpoint, scoped to marketmind-core's ~27-country reference basket
 country-code de-para elsewhere in the project — see marketmind-core memory
 marketmind_known_gaps item 6).
 
-English short names below are NOT yet confirmed against DataForSEO's own
-`GET /v3/keywords_data/google_trends/locations` list (that call needs a
-real, funded credential we didn't have while writing this). Run
-scripts/verify_dataforseo_locations.py once real credentials are set to
-confirm or correct every entry — do not trust this table blindly for a new
-country before that script has checked it.
+CONFIRMADO em 2026-09-22 contra a lista da própria DataForSEO
+(`GET /v3/keywords_data/google_trends/locations`), com credencial real: as 24
+entradas batem exatamente. Rode scripts/verify_dataforseo_locations.py antes de
+acrescentar um país — ele confere a tabela e lista o que a DataForSEO cobre e
+este projeto ainda não analisa (187 países em 2026-09-22).
 
-Russia/Belarus are deliberately absent: DataForSEO's own docs confirm they are
-unsupported across all of their services (sanctions), so any lookup must fail
-loudly (see dataforseo_client.py), not silently guess a name. China is likewise
-excluded (in UNSUPPORTED_ISO2, not here): Google is blocked in mainland China so
-Google Ads returns no representative search volume. See docs/paises-disponiveis.md.
+Um aviso sobre esse script: ele já acusou 23 divergências que não existiam. A
+lista tem 2.311 localizações e a maioria é subdivisão — sem filtrar por
+`location_type == "Country"`, "Brazil" vira "State of Acre,Brazil".
+
+Rússia e Belarus estão ausentes de fato: verificado em 2026-09-22, a DataForSEO
+não os lista (sanções), então qualquer busca tem de falhar alto (ver
+dataforseo_client.py) em vez de adivinhar um nome em silêncio.
+
+A China é outro caso, e a diferença importa: ela ESTÁ no catálogo, listada como
+'China'. A exclusão dela não é de cobertura — é que o Google é bloqueado na China
+continental, então o volume de busca do Google Ads não representa aquele
+mercado. Um número que existe e não significa nada é pior que um ausente, porque
+entra na comparação. Ver docs/paises-disponiveis.md.
 """
 
 ISO2_TO_LOCATION_NAME: dict[str, str] = {
