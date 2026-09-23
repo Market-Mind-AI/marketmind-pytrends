@@ -29,7 +29,7 @@ from app.schemas.responses import (
     StoredSearchVolumeItem,
     StoredSearchVolumeResponse,
 )
-from app.utils.time import elapsed_ms, utc_now
+from app.utils.time import elapsed_ms, stale_cutoff, utc_now
 
 _SOURCE = "dataforseo_google_ads"
 
@@ -110,9 +110,7 @@ class KeywordsDataService:
             await self._fail(run, endpoint, keyword_label, request.location, start, e)
             raise
 
-    async def collect_keywords_for_keywords(
-        self, request: KeywordsForKeywordsRequest
-    ) -> KeywordsForKeywordsResponse:
+    async def collect_keywords_for_keywords(self, request: KeywordsForKeywordsRequest) -> KeywordsForKeywordsResponse:
         endpoint = KeywordEndpoint.KEYWORDS_FOR_KEYWORDS
         start = utc_now()
         seed_label = ", ".join(request.seed_keywords)
@@ -283,14 +281,25 @@ class KeywordsDataService:
         Trends to Google Ads.
 
         `missing` is the actionable half. It is exactly the set that still needs
-        collecting, and deriving it outside would go subtly wrong: the match is
-        case-insensitive because DataForSEO lowercases what it stores, so a
-        curated term with capitals looks missing forever and is re-downloaded
-        every run, at real cost per call.
+        collecting, and deriving it outside would go subtly wrong twice over:
+        the match is case-insensitive because DataForSEO lowercases what it
+        stores (a curated term with capitals looks missing forever and is
+        re-downloaded every run, at real cost per call), and age counts as
+        missing -- see `stale_after_days`.
         """
         rows = await self._sv_repo.latest_by_keywords(location=request.location, keywords=request.keywords)
-        found = {row.keyword.strip().lower() for row in rows}
-        missing = [k for k in request.keywords if k.strip().lower() not in found]
+        # Vencido conta como faltando. Antes `missing` era só "nunca coletado",
+        # e como quem chama só monta uma coleta para o que está em `missing`, um
+        # volume de busca baixado uma vez valia para sempre -- janeiro sendo lido
+        # como verdade em setembro. A demanda é o único indicador aqui que muda
+        # de mês para mês; era justamente ele que nunca se renovava.
+        #
+        # A linha vencida CONTINUA voltando em `keywords`: quem chama ainda pode
+        # querer o último valor conhecido enquanto a coleta não termina. O que
+        # muda é o pedido de coleta, não o que se sabe.
+        corte = stale_cutoff(request.stale_after_days) if request.stale_after_days else None
+        frescos = {row.keyword.strip().lower() for row in rows if corte is None or row.created_at >= corte}
+        missing = [k for k in request.keywords if k.strip().lower() not in frescos]
 
         return StoredSearchVolumeResponse(
             data=StoredSearchVolumeData(

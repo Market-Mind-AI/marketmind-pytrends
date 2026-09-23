@@ -78,9 +78,17 @@ class StoredSearchVolumeRequest(BaseModel):
         description="Keywords to look up in what is already stored (1..1000)",
         examples=[["air fryer", "freidora de aire"]],
     )
+    stale_after_days: int | None = Field(
+        None,
+        ge=1,
+        description=(
+            "Um termo coletado há mais dias que isto entra em `missing`, mesmo tendo linha "
+            "guardada. Sem este campo nada vence: era o comportamento antigo, em que um "
+            "volume de busca coletado uma vez valia para sempre."
+        ),
+        examples=[30],
+    )
 
     model_config = {
-        "json_schema_extra": {
-            "examples": [{"location": "ES", "keywords": ["air fryer", "freidora de aire"]}]
-        }
+        "json_schema_extra": {"examples": [{"location": "ES", "keywords": ["air fryer", "freidora de aire"]}]}
     }

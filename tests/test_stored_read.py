@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -7,7 +7,17 @@ from app.schemas.requests import StoredSearchVolumeRequest
 from app.services.keywords_data_service import KeywordsDataService
 
 
-def _volume_row(keyword: str, volume: str = "1500") -> SimpleNamespace:
+# `created_at` COM fuso porque é assim que a coluna volta: as duas tabelas são
+# `timestamp with time zone`. Um fixture ingênuo passa a comparar com um corte
+# ingênuo e o teste fica verde enquanto a produção levanta `TypeError: can't
+# compare offset-naive and offset-aware datetimes` -- foi exatamente assim que o
+# `/freshness` do OECD e o do World Bank passaram semanas quebrados com dez
+# testes verdes cada.
+def _agora_menos(dias: int) -> datetime:
+    return datetime.now(UTC) - timedelta(days=dias)
+
+
+def _volume_row(keyword: str, volume: str = "1500", *, dias: int = 0) -> SimpleNamespace:
     return SimpleNamespace(
         keyword=keyword,
         location="ES",
@@ -17,7 +27,7 @@ def _volume_row(keyword: str, volume: str = "1500") -> SimpleNamespace:
         competition_index=80,
         cpc=Decimal("0.45"),
         monthly_searches=[{"year": 2026, "month": 8, "search_volume": 1600}],
-        created_at=datetime(2026, 9, 1),
+        created_at=_agora_menos(dias),
     )
 
 
@@ -31,7 +41,7 @@ def _related_row(keyword: str, seed: str = "air fryer") -> SimpleNamespace:
         competition_index=50,
         cpc=Decimal("0.30"),
         monthly_searches=[],
-        created_at=datetime(2026, 9, 1),
+        created_at=_agora_menos(0),
     )
 
 
@@ -45,9 +55,7 @@ def _service(mock_session: AsyncMock, *, volumes: list | None = None, related: l
 async def test_returns_what_is_stored(mock_session: AsyncMock) -> None:
     service = _service(mock_session, volumes=[_volume_row("air fryer")])
 
-    response = await service.read_stored_search_volume(
-        StoredSearchVolumeRequest(location="ES", keywords=["air fryer"])
-    )
+    response = await service.read_stored_search_volume(StoredSearchVolumeRequest(location="ES", keywords=["air fryer"]))
 
     assert [k.keyword for k in response.data.keywords] == ["air fryer"]
     assert response.data.keywords[0].search_volume == 1500.0
@@ -70,9 +78,7 @@ async def test_a_capitalised_term_is_not_reported_missing(mock_session: AsyncMoc
     every run, and every one of those calls is billed."""
     service = _service(mock_session, volumes=[_volume_row("air fryer")])
 
-    response = await service.read_stored_search_volume(
-        StoredSearchVolumeRequest(location="ES", keywords=["Air Fryer"])
-    )
+    response = await service.read_stored_search_volume(StoredSearchVolumeRequest(location="ES", keywords=["Air Fryer"]))
 
     assert response.data.missing == []
 
@@ -124,8 +130,57 @@ async def test_a_null_volume_stays_null_rather_than_becoming_zero(mock_session: 
     row.search_volume = None
     service = _service(mock_session, volumes=[row])
 
-    response = await service.read_stored_search_volume(
-        StoredSearchVolumeRequest(location="ES", keywords=["air fryer"])
-    )
+    response = await service.read_stored_search_volume(StoredSearchVolumeRequest(location="ES", keywords=["air fryer"]))
 
     assert response.data.keywords[0].search_volume is None
+
+
+async def test_a_term_collected_long_ago_counts_as_missing(mock_session: AsyncMock) -> None:
+    """A demanda é o único indicador que muda de mês para mês, e era o único que
+    nunca se renovava. `missing` significava "nunca coletado", e como quem chama
+    só monta coleta para o que está em `missing`, um volume baixado em janeiro
+    era lido como verdade em setembro — para sempre, sem nada acusar."""
+    service = _service(mock_session, volumes=[_volume_row("air fryer", dias=45)])
+
+    response = await service.read_stored_search_volume(
+        StoredSearchVolumeRequest(location="ES", keywords=["air fryer"], stale_after_days=30)
+    )
+
+    assert response.data.missing == ["air fryer"]
+
+
+async def test_a_recent_term_is_not_recollected(mock_session: AsyncMock) -> None:
+    """O outro lado, e o que custa dinheiro: dentro do prazo não se pergunta à
+    DataForSEO, que cobra por chamada."""
+    service = _service(mock_session, volumes=[_volume_row("air fryer", dias=3)])
+
+    response = await service.read_stored_search_volume(
+        StoredSearchVolumeRequest(location="ES", keywords=["air fryer"], stale_after_days=30)
+    )
+
+    assert response.data.missing == []
+
+
+async def test_a_stale_term_still_reports_its_last_known_value(mock_session: AsyncMock) -> None:
+    """Vencido entra em `missing` mas NÃO some de `keywords`: quem chama ainda
+    pode usar o último valor conhecido enquanto a coleta não termina. O que
+    muda é o pedido de coleta, não o que se sabe."""
+    service = _service(mock_session, volumes=[_volume_row("air fryer", dias=45)])
+
+    response = await service.read_stored_search_volume(
+        StoredSearchVolumeRequest(location="ES", keywords=["air fryer"], stale_after_days=30)
+    )
+
+    assert [k.keyword for k in response.data.keywords] == ["air fryer"]
+    assert response.data.keywords[0].search_volume == 1500.0
+
+
+async def test_without_a_deadline_nothing_expires(mock_session: AsyncMock) -> None:
+    """O comportamento antigo continua disponível e é o padrão: sem
+    `stale_after_days`, idade nenhuma torna um termo coletável de novo. Quem
+    chama decide a política; este serviço só responde a pergunta."""
+    service = _service(mock_session, volumes=[_volume_row("air fryer", dias=900)])
+
+    response = await service.read_stored_search_volume(StoredSearchVolumeRequest(location="ES", keywords=["air fryer"]))
+
+    assert response.data.missing == []
