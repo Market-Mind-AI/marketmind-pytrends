@@ -49,10 +49,26 @@ class TestDataForSEOClientLocations:
         with pytest.raises(DataForSEOClientError, match="not available for Google Ads demand"):
             client._location_name("CN")
 
-    def test_unmapped_country_raises(self) -> None:
+    def test_a_country_dataforseo_does_not_list_raises(self) -> None:
         client = DataForSEOClient()
-        with pytest.raises(DataForSEOClientError, match="No DataForSEO location_name mapping"):
+        with pytest.raises(DataForSEOClientError, match="does not list country"):
             client._location_name("ZZ")
+
+    def test_a_country_only_the_catalogue_knows_is_resolved(self) -> None:
+        """A tabela escrita à mão tinha 25 países. Em 24/09/2026 isso derrubou
+        uma análise inteira da Bolívia: `BO` estava no catálogo da DataForSEO e
+        no seletor do front, e morria aqui — junto com os outros 125 mercados
+        recém-abertos. Quem sabe quais países existem é a fonte."""
+        client = DataForSEOClient()
+        with patch.object(DataForSEOClient, "_catalogo_de_paises", return_value={"BO": "Bolivia"}):
+            assert client._location_name("BO") == "Bolivia"
+
+    def test_the_hand_written_table_still_answers_when_the_catalogue_cannot(self) -> None:
+        """Rede de segurança: se a chamada de catálogo não sair, os mercados que
+        já funcionavam continuam funcionando."""
+        client = DataForSEOClient()
+        with patch.object(DataForSEOClient, "_catalogo_de_paises", return_value={}):
+            assert client._location_name("BR") == "Brazil"
 
 
 class TestSearchVolume:

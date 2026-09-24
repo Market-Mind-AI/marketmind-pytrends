@@ -110,17 +110,59 @@ def _result_to_dict(item: Any) -> dict[str, Any]:
     }
 
 
+# O catálogo de países da própria DataForSEO, buscado uma vez por processo.
+#
+# Era uma tabela escrita à mão com 25 países, e acrescentar um mercado exigia
+# alguém editar o arquivo antes. Em 24/09/2026 isso derrubou uma análise da
+# Bolívia inteira: o país estava no catálogo da DataForSEO, estava no seletor do
+# front, e morria aqui com "No DataForSEO location_name mapping for country
+# 'BO'". Cento e vinte e seis dos países recém-abertos falhariam igual.
+#
+# O endpoint de localizações é estático e NÃO é cobrado — é lista de referência,
+# igual em sandbox e em produção. Então a pergunta é feita à fonte, que é quem
+# sabe, e a tabela manual fica só de rede de segurança para quando a chamada
+# não sair.
+_CATALOGO: dict[str, str] | None = None
+
+
 class DataForSEOClient:
+    def _catalogo_de_paises(self) -> dict[str, str]:
+        """ISO2 -> `location_name`, dito pela DataForSEO.
+
+        Uma vez por processo. Só as entradas de PAÍS: a lista tem 2.311
+        localizações e a maioria é subdivisão, então sem o filtro "Brazil" vira
+        "State of Acre,Brazil" — foi o que já produziu 23 divergências falsas
+        num script de verificação.
+        """
+        global _CATALOGO
+        if _CATALOGO is not None:
+            return _CATALOGO
+        try:
+            with dfs_api_provider.ApiClient(self._configuration()) as api_client:
+                resposta = KeywordsDataApi(api_client).google_trends_locations()
+            resultado = (resposta.tasks or [])[0].result or []
+            _CATALOGO = {
+                loc.country_iso_code: loc.location_name
+                for loc in resultado
+                if loc and loc.country_iso_code and getattr(loc, "location_type", None) == "Country"
+            }
+            logger.info(f"Catálogo de localizações da DataForSEO carregado: {len(_CATALOGO)} países")
+        except Exception as exc:  # noqa: BLE001 — sem catálogo, a tabela estática ainda responde
+            logger.warning(f"Não consegui ler o catálogo de localizações da DataForSEO: {exc}")
+            _CATALOGO = {}
+        return _CATALOGO
+
     def _location_name(self, country: str) -> str:
         if country in UNSUPPORTED_ISO2:
             raise DataForSEOClientError(
                 f"Country '{country}' is not available for Google Ads demand: {UNSUPPORTED_ISO2[country]}"
             )
-        location_name = ISO2_TO_LOCATION_NAME.get(country)
+        # A fonte primeiro; a tabela escrita à mão é a rede de segurança.
+        location_name = self._catalogo_de_paises().get(country) or ISO2_TO_LOCATION_NAME.get(country)
         if location_name is None:
             raise DataForSEOClientError(
-                f"No DataForSEO location_name mapping for country '{country}' — add it to "
-                "app/clients/dataforseo_locations.py and confirm with scripts/verify_dataforseo_locations.py"
+                f"DataForSEO does not list country '{country}' at country level — it cannot be "
+                "measured for Google Ads demand"
             )
         return location_name
 
