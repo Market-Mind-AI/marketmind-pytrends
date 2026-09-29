@@ -242,6 +242,13 @@ class DataForSEOClient:
         task = tasks[0]
         if task is None:
             raise DataForSEOClientError(f"DataForSEO returned an empty task for {label}")
+        # What DataForSEO billed for this task, in USD, as it reports it. The
+        # only place the real cost of a run's demand data is visible — logged
+        # before the status check, since a failed task can be billed too.
+        logger.info(
+            f"DATAFORSEO_COST endpoint={label.split(' ', 1)[0]} cost_usd={task.cost} "
+            f"status={task.status_code} results={task.result_count}"
+        )
         if task.status_code is not None and task.status_code >= _TASK_ERROR_THRESHOLD:
             message = f"DataForSEO task failed ({task.status_code}): {task.status_message}"
             if task.status_code >= _TASK_SERVER_ERROR_THRESHOLD:
