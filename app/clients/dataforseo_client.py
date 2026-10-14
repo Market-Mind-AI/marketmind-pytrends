@@ -124,6 +124,19 @@ def _result_to_dict(item: Any) -> dict[str, Any]:
 # não sair.
 _CATALOGO: dict[str, str] | None = None
 
+# O Google Ads fala um dialeto próprio de códigos de idioma, e o resto do
+# sistema fala ISO 639-1 (é o que o LLM de enriquecimento escreve em
+# `search_language`). Duas divergências conhecidas, medidas em 14/10/2026 com
+# Israel e China: hebraico é `iw` (o código antigo, que o Google nunca
+# abandonou) e chinês não existe sem a variante — `zh_CN` simplificado, `zh_TW`
+# tradicional. Mandar `he` ou `zh` recebe "40501 Invalid Field: 'language_code'",
+# e a análise inteira desiste depois de três tentativas iguais.
+_CODIGO_GOOGLE_ADS: dict[str, str] = {"he": "iw", "zh": "zh_CN"}
+_CHINES_TRADICIONAL = {"TW", "HK", "MO"}
+# Os idiomas que a própria DataForSEO lista para o Google Ads, uma vez por
+# processo — a rede de segurança é o mapa acima.
+_IDIOMAS: set[str] | None = None
+
 
 class DataForSEOClient:
     def _catalogo_de_paises(self) -> dict[str, str]:
@@ -151,6 +164,38 @@ class DataForSEOClient:
             logger.warning(f"Não consegui ler o catálogo de localizações da DataForSEO: {exc}")
             _CATALOGO = {}
         return _CATALOGO
+
+    def _catalogo_de_idiomas(self) -> set[str]:
+        """Os `language_code` que o Google Ads aceita, ditos pela DataForSEO.
+        Mesmo regime do catálogo de países: endpoint de referência, não
+        cobrado, lido uma vez."""
+        global _IDIOMAS
+        if _IDIOMAS is not None:
+            return _IDIOMAS
+        try:
+            with dfs_api_provider.ApiClient(self._configuration()) as api_client:
+                resposta = KeywordsDataApi(api_client).google_ads_languages()
+            resultado = (resposta.tasks or [])[0].result or []
+            _IDIOMAS = {lang.language_code for lang in resultado if lang and lang.language_code}
+            logger.info(f"Catálogo de idiomas do Google Ads carregado: {len(_IDIOMAS)} códigos")
+        except Exception as exc:  # noqa: BLE001 — sem catálogo, o mapa estático ainda responde
+            logger.warning(f"Não consegui ler o catálogo de idiomas do Google Ads: {exc}")
+            _IDIOMAS = set()
+        return _IDIOMAS
+
+    def _language_code(self, language: str, country: str) -> str:
+        """O código que o Google Ads aceita para este idioma neste país."""
+        codigo = language.strip()
+        if codigo.lower() == "zh" and country in _CHINES_TRADICIONAL:
+            return "zh_TW"
+        codigo = _CODIGO_GOOGLE_ADS.get(codigo.lower(), codigo)
+        conhecidos = self._catalogo_de_idiomas()
+        if conhecidos and codigo not in conhecidos:
+            raise DataForSEOClientError(
+                f"Google Ads does not offer language '{language}' (sent as '{codigo}') — it cannot be "
+                "measured for demand"
+            )
+        return codigo
 
     def _location_name(self, country: str) -> str:
         if country in UNSUPPORTED_ISO2:
@@ -263,17 +308,18 @@ class DataForSEOClient:
         """Google Ads Search Volume live for up to 1000 keywords at ONE
         location. Returns (per-keyword dicts, request_payload)."""
         location_name = self._location_name(country)
+        language_code = self._language_code(language, country)
         label = f"search_volume {keywords!r} in '{country}'"
         request = KeywordsDataGoogleAdsSearchVolumeLiveRequestInfo(
             keywords=list(keywords),
             location_name=location_name,
-            language_code=language,
+            language_code=language_code,
         )
         payload: dict[str, Any] = {
             "keywords": list(keywords),
             "country": country,
             "location_name": location_name,
-            "language_code": language,
+            "language_code": language_code,
             "provider": "dataforseo_google_ads",
             "endpoint": SEARCH_VOLUME_ENDPOINT,
         }
@@ -294,17 +340,18 @@ class DataForSEOClient:
         seed set that produced it). `limit` caps the returned rows client-side
         (the endpoint itself can return up to 20000)."""
         location_name = self._location_name(country)
+        language_code = self._language_code(language, country)
         label = f"keywords_for_keywords {seed_keywords!r} in '{country}'"
         request = KeywordsDataGoogleAdsKeywordsForKeywordsLiveRequestInfo(
             keywords=list(seed_keywords),
             location_name=location_name,
-            language_code=language,
+            language_code=language_code,
         )
         payload: dict[str, Any] = {
             "seed_keywords": list(seed_keywords),
             "country": country,
             "location_name": location_name,
-            "language_code": language,
+            "language_code": language_code,
             "limit": limit,
             "provider": "dataforseo_google_ads",
             "endpoint": KEYWORDS_FOR_KEYWORDS_ENDPOINT,

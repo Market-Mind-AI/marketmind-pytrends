@@ -49,6 +49,29 @@ class TestDataForSEOClientLocations:
         with pytest.raises(DataForSEOClientError, match="not available for Google Ads demand"):
             client._location_name("CN")
 
+    def test_hebrew_and_chinese_are_sent_in_google_ads_codes(self) -> None:
+        """Medido em 14/10/2026: `he` e `zh` recebem 40501 Invalid Field. O
+        Google Ads quer `iw`, `zh_CN` e, nos mercados de chinês tradicional,
+        `zh_TW`; tudo o mais passa como está."""
+        client = DataForSEOClient()
+        with patch.object(DataForSEOClient, "_catalogo_de_idiomas", return_value={"iw", "zh_CN", "zh_TW", "pt"}):
+            assert client._language_code("he", "IL") == "iw"
+            assert client._language_code("zh", "CN") == "zh_CN"
+            assert client._language_code("zh", "TW") == "zh_TW"
+            assert client._language_code("pt", "BR") == "pt"
+
+    def test_a_language_google_ads_does_not_offer_fails_before_spending(self) -> None:
+        client = DataForSEOClient()
+        with patch.object(DataForSEOClient, "_catalogo_de_idiomas", return_value={"en"}):
+            with pytest.raises(DataForSEOClientError, match="does not offer language 'xx'"):
+                client._language_code("xx", "US")
+
+    def test_the_static_language_map_still_answers_when_the_catalogue_cannot(self) -> None:
+        client = DataForSEOClient()
+        with patch.object(DataForSEOClient, "_catalogo_de_idiomas", return_value=set()):
+            assert client._language_code("he", "IL") == "iw"
+            assert client._language_code("xx", "US") == "xx"
+
     def test_a_country_dataforseo_does_not_list_raises(self) -> None:
         client = DataForSEOClient()
         with pytest.raises(DataForSEOClientError, match="does not list country"):
