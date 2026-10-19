@@ -1,8 +1,12 @@
-"""Static ISO2 -> DataForSEO `location_name` mapping for the Google Trends
-Explore endpoint, scoped to marketmind-core's ~27-country reference basket
+"""Static ISO2 -> DataForSEO `location_name` mapping for the Google Ads
+keyword-data endpoints, scoped to the scoring service's reference basket
 (same "canonical table built once, no LLM" philosophy already applied to
-country-code de-para elsewhere in the project — see marketmind-core memory
-marketmind_known_gaps item 6).
+country-code de-para elsewhere in the project).
+
+The catalogue it is checked against is DataForSEO's
+`keywords_data/google_trends/locations` list — a leftover of the Google Trends
+days (retired in migration 007) that is kept because the location names are
+the same ones the Google Ads endpoints accept.
 
 CONFIRMADO em 2026-09-22 contra a lista da própria DataForSEO
 (`GET /v3/keywords_data/google_trends/locations`), com credencial real: as 24
@@ -22,7 +26,7 @@ A China é outro caso, e a diferença importa: ela ESTÁ no catálogo, listada c
 'China'. A exclusão dela não é de cobertura — é que o Google é bloqueado na China
 continental, então o volume de busca do Google Ads não representa aquele
 mercado. Um número que existe e não significa nada é pior que um ausente, porque
-entra na comparação. Ver docs/paises-disponiveis.md.
+entra na comparação.
 """
 
 ISO2_TO_LOCATION_NAME: dict[str, str] = {

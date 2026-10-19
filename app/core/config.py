@@ -8,7 +8,6 @@ from app.db.ssl_config import sslmode_query_suffix
 class Settings(BaseSettings):
     app_name: str = "marketmind-pytrends"
     app_env: str = "local"
-    app_port: int = 8000
 
     database_host: str = "localhost"
     database_port: int = 5432
@@ -22,33 +21,23 @@ class Settings(BaseSettings):
     # (`require_secure_transport = ON`). See app/db/ssl_config.py.
     database_ssl_mode: str = "disable"
 
+    # The language a request is made in when the caller does not say.
     default_hl: str = "en-US"
-    default_tz: int = 0
-    default_timeframe: str = "today 12-m"
-    default_timeout: int = 30
+
+    # How the DataForSEO client insists: `default_retries` attempts, sleeping
+    # `default_backoff * attempt` seconds between them (linear), on 5xx, 429,
+    # timeouts, network errors and 5xxxx task codes. Worst case with the
+    # defaults: 3 attempts and 2 + 4 = 6 seconds of waiting. Client-side errors
+    # (4xx, 4xxxx task codes) are never retried. See
+    # app/clients/dataforseo_client.py::_run_with_retry.
     default_retries: int = 3
     default_backoff: int = 2
 
-    # PyTrends is the highest-weighted data source (Demand dimension, Cap. 5)
-    # and Google Trends rate-limits aggressively — this must retry far more
-    # persistently than a generic API client before giving up on a gap.
-    # Worst case (all attempts hit the max wait): ~25 minutes for one
-    # keyword/country/period. Bounded, not infinite, on purpose: an
-    # unbounded retry inside a FastAPI request would hang forever if Google
-    # ever hard-blocks this IP, and marketmind-core's BackgroundTasks-based
-    # /analyze (no worker/queue yet) has no way to resume a stuck request.
-    trends_rate_limit_max_attempts: int = 12
-    trends_rate_limit_initial_wait_seconds: float = 15.0
-    trends_rate_limit_max_wait_seconds: float = 180.0
-    trends_rate_limit_jitter_seconds: float = 10.0
-
-    # Fallback (2026-07-08): DataForSEO's Google Trends Explore endpoint,
-    # used only after the retries above are exhausted. Empty
-    # login/password means the fallback is simply disabled — PyTrends
-    # errors propagate exactly as before this was added. Sandbox defaults
-    # to on (mock data, never billed) so the integration can be exercised
-    # end-to-end before spending real credit; see
-    # app/clients/dataforseo_client.py and scripts/verify_dataforseo_locations.py.
+    # DataForSEO Google Ads credentials (login and API password, from the
+    # dashboard — the API password is not the account password). Sandbox is the
+    # default IN CODE so a fresh checkout never bills anyone: same auth, same
+    # shapes, mock data. Every deployment sets it to false; the collector is
+    # useless on mock data. See app/clients/dataforseo_client.py.
     dataforseo_login: str = ""
     dataforseo_password: str = ""
     dataforseo_use_sandbox: bool = True

@@ -15,9 +15,9 @@ class TestIngestionRunRepository:
         session.add = MagicMock()
 
         repo = IngestionRunRepository(session)
-        run = await repo.create(source="google_trends", request_payload={"keyword": "test"})
+        run = await repo.create(source="dataforseo_google_ads", request_payload={"keyword": "test"})
 
-        assert run.source == "google_trends"
+        assert run.source == "dataforseo_google_ads"
         assert run.status == "running"
         assert run.request_payload == {"keyword": "test"}
         session.add.assert_called_once()
@@ -30,7 +30,7 @@ class TestIngestionRunRepository:
         session.add = MagicMock()
 
         repo = IngestionRunRepository(session)
-        run = await repo.create(source="google_trends", request_payload={"keyword": "test"})
+        run = await repo.create(source="dataforseo_google_ads", request_payload={"keyword": "test"})
         updated = await repo.mark_success(run, execution_time_ms=500)
 
         assert updated.status == "success"
@@ -44,7 +44,7 @@ class TestIngestionRunRepository:
         session.add = MagicMock()
 
         repo = IngestionRunRepository(session)
-        run = await repo.create(source="google_trends", request_payload={"keyword": "test"})
+        run = await repo.create(source="dataforseo_google_ads", request_payload={"keyword": "test"})
         updated = await repo.mark_failed(run, error_message="Timeout", execution_time_ms=3000)
 
         assert updated.status == "failed"
@@ -65,13 +65,12 @@ class TestTrendRequestRepository:
             ingestion_run_id=run_id,
             keyword="air fryer",
             country="ES",
-            endpoint="interest_over_time",
+            endpoint="search_volume",
             language="en-US",
-            timeframe="today 12-m",
         )
 
         assert tr.keyword == "air fryer"
         assert tr.country == "ES"
-        assert tr.endpoint == "interest_over_time"
+        assert tr.endpoint == "search_volume"
         assert tr.ingestion_run_id == run_id
         session.add.assert_called_once()

@@ -17,7 +17,3 @@ class DataForSEOTransientTaskError(DataForSEOClientError):
     returns 503. Distinct from client-side task errors (4xxxx, permanent) so the
     retry loop can retry these transient upstream failures instead of aborting a
     whole analysis on a single blip."""
-
-
-class IngestionError(Exception):
-    pass
