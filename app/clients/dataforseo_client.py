@@ -27,6 +27,7 @@ from dataforseo_client.models.keywords_data_google_ads_search_volume_live_reques
 from dataforseo_client.rest import ApiException
 
 from app.clients.dataforseo_locations import ISO2_TO_LOCATION_NAME, UNSUPPORTED_ISO2
+from app.core import spend
 from app.core.config import settings
 from app.core.exceptions import (
     DataForSEOClientError,
@@ -287,13 +288,15 @@ class DataForSEOClient:
         task = tasks[0]
         if task is None:
             raise DataForSEOClientError(f"DataForSEO returned an empty task for {label}")
-        # What DataForSEO billed for this task, in USD, as it reports it. The
-        # only place the real cost of a run's demand data is visible — logged
-        # before the status check, since a failed task can be billed too.
+        # What DataForSEO billed for this task, in USD, as it reports it —
+        # logged, and added to the request's tally (app/core/spend.py) so the
+        # scoring service can carry it into the analysis's trace. Before the
+        # status check, since a failed task can be billed too.
         logger.info(
             f"DATAFORSEO_COST endpoint={label.split(' ', 1)[0]} cost_usd={task.cost} "
             f"status={task.status_code} results={task.result_count}"
         )
+        spend.add(task.cost)
         if task.status_code is not None and task.status_code >= _TASK_ERROR_THRESHOLD:
             message = f"DataForSEO task failed ({task.status_code}): {task.status_message}"
             if task.status_code >= _TASK_SERVER_ERROR_THRESHOLD:
