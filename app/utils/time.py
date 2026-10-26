@@ -2,22 +2,22 @@ from datetime import UTC, datetime, timedelta
 
 
 def utc_now() -> datetime:
-    return datetime.now(UTC).replace(tzinfo=None)
+    """Agora, em UTC e COM fuso -- a única convenção de instante deste serviço.
+
+    As colunas de data são todas `timestamp with time zone`, e voltam do banco
+    com fuso. Enquanto este relógio devolvia o instante sem fuso, comparar um
+    com o outro era `TypeError: can't compare offset-naive and offset-aware
+    datetimes` -- derrubou o /freshness da OCDE e o do World Bank, um de cada
+    vez -- e cada serviço remendava com uma conversão própria no ponto da
+    comparação. Com o fuso desde a origem, não há o que converter. É a mesma
+    convenção nos quatro coletores.
+    """
+    return datetime.now(UTC)
 
 
 def stale_cutoff(days: int) -> datetime:
-    """O instante antes do qual um dado coletado conta como vencido — COM fuso.
-
-    `utc_now()` devolve sem fuso, e as colunas `created_at` deste serviço são
-    `timestamp with time zone`: comparar um com o outro é `TypeError: can't
-    compare offset-naive and offset-aware datetimes`. Esse erro exato derrubou
-    o `/freshness` do OECD e o do World Bank, cada um de uma vez, e os dois
-    passaram semanas sem que nada acusasse — o job só aparecia como um pod em
-    `Error` numa listagem que ninguém abria.
-
-    Por isso este corte nasce ciente do fuso, e não convertido depois.
-    """
-    return datetime.now(UTC) - timedelta(days=days)
+    """O instante antes do qual uma verificação conta como vencida."""
+    return utc_now() - timedelta(days=days)
 
 
 def elapsed_ms(start: datetime) -> int:

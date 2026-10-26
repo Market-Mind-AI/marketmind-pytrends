@@ -6,6 +6,7 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
+from app.utils.time import utc_now
 
 
 class IngestionRun(Base):
@@ -19,7 +20,7 @@ class IngestionRun(Base):
     execution_time_ms: Mapped[int | None] = mapped_column(nullable=True)
     request_payload: Mapped[dict] = mapped_column(JSONB, nullable=False)  # type: ignore[assignment]
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(nullable=False, default=utc_now)
 
     trend_requests: Mapped[list["TrendRequest"]] = relationship(back_populates="ingestion_run")  # type: ignore[name-defined]  # noqa: F821
 

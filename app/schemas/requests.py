@@ -78,13 +78,16 @@ class StoredSearchVolumeRequest(BaseModel):
         description="Keywords to look up in what is already stored (1..1000)",
         examples=[["air fryer", "freidora de aire"]],
     )
+    # Sem padrão de 90 dias, ao contrário dos coletores de indicadores: lá o
+    # dado sai uma vez por ano, aqui o volume de busca muda todo mês, e quem
+    # pergunta sempre diz a janela (o Core manda `demand_stale_after_days`, 30).
     stale_after_days: int | None = Field(
         None,
         ge=1,
         description=(
-            "Um termo coletado há mais dias que isto entra em `missing`, mesmo tendo linha "
-            "guardada. Sem este campo nada vence: era o comportamento antigo, em que um "
-            "volume de busca coletado uma vez valia para sempre."
+            "Um termo cuja última resposta da DataForSEO tem mais dias que isto entra em "
+            "`missing`, mesmo tendo linha guardada. Sem este campo nada vence: era o "
+            "comportamento antigo, em que um volume de busca coletado uma vez valia para sempre."
         ),
         examples=[30],
     )

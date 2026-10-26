@@ -7,6 +7,7 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
+from app.utils.time import utc_now
 
 
 class KeywordSearchVolume(Base):
@@ -24,7 +25,7 @@ class KeywordSearchVolume(Base):
     competition_index: Mapped[int | None] = mapped_column(nullable=True)
     cpc: Mapped[Decimal | None] = mapped_column(Numeric, nullable=True)
     monthly_searches: Mapped[list | None] = mapped_column(JSONB, nullable=True)  # type: ignore[type-arg]
-    created_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(nullable=False, default=utc_now)
 
     trend_request: Mapped["TrendRequest"] = relationship(back_populates="keyword_search_volume_records")  # type: ignore[name-defined]  # noqa: F821
 

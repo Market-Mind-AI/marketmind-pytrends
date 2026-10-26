@@ -9,6 +9,7 @@ from app.core.exceptions import (
     DataForSEOClientError,
     DataForSEORateLimitError,
     DataForSEOTimeoutError,
+    DataForSEOTransientError,
 )
 
 
@@ -202,7 +203,7 @@ class TestSearchVolume:
         _install_api(mock_api_client_cls, mock_keywords_api_cls, mock_api)
 
         client = DataForSEOClient()
-        with pytest.raises(DataForSEOClientError, match="after 3 attempts"):
+        with pytest.raises(DataForSEOTransientError, match="after 3 attempts"):
             client.search_volume(["air fryer"], "ES", "en-US")
         assert mock_api.google_ads_search_volume_live.call_count == 3
 
@@ -234,16 +235,49 @@ class TestSearchVolume:
 
     @patch("app.clients.dataforseo_client.KeywordsDataApi")
     @patch("app.clients.dataforseo_client.dfs_api_provider.ApiClient")
-    def test_generic_api_error_maps_to_client_error(
+    def test_a_server_error_that_persists_is_transient(
         self, mock_api_client_cls: MagicMock, mock_keywords_api_cls: MagicMock
     ) -> None:
+        """Esgotado, um 5xx é a fonte fora do ar -- 503, como nos outros coletores."""
         mock_api = MagicMock()
         mock_api.google_ads_search_volume_live.side_effect = ApiException(status=500, reason="Server Error")
         _install_api(mock_api_client_cls, mock_keywords_api_cls, mock_api)
 
         client = DataForSEOClient()
+        with pytest.raises(DataForSEOTransientError):
+            client.search_volume(["air fryer"], "ES", "en-US")
+
+    @patch("app.clients.dataforseo_client.KeywordsDataApi")
+    @patch("app.clients.dataforseo_client.dfs_api_provider.ApiClient")
+    def test_another_4xx_is_never_retried(
+        self, mock_api_client_cls: MagicMock, mock_keywords_api_cls: MagicMock
+    ) -> None:
+        mock_api = MagicMock()
+        mock_api.google_ads_search_volume_live.side_effect = ApiException(status=400, reason="Bad Request")
+        _install_api(mock_api_client_cls, mock_keywords_api_cls, mock_api)
+
+        client = DataForSEOClient()
         with pytest.raises(DataForSEOClientError):
             client.search_volume(["air fryer"], "ES", "en-US")
+        assert mock_api.google_ads_search_volume_live.call_count == 1
+
+    @patch("app.clients.dataforseo_client.KeywordsDataApi")
+    @patch("app.clients.dataforseo_client.dfs_api_provider.ApiClient")
+    def test_a_429_is_retried_honouring_retry_after(
+        self, mock_api_client_cls: MagicMock, mock_keywords_api_cls: MagicMock
+    ) -> None:
+        mock_api = MagicMock()
+        mock_api.google_ads_search_volume_live.side_effect = [
+            ApiException(status=429, reason="Too Many Requests"),
+            _response_with_results([_result_item()]),
+        ]
+        _install_api(mock_api_client_cls, mock_keywords_api_cls, mock_api)
+
+        with patch("app.clients.dataforseo_client.time.sleep") as sleep:
+            records, _ = DataForSEOClient().search_volume(["air fryer"], "ES", "en-US")
+
+        assert len(records) == 1
+        sleep.assert_called_once()
 
 
 class TestKeywordsForKeywords:

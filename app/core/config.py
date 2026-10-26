@@ -24,13 +24,18 @@ class Settings(BaseSettings):
     # The language a request is made in when the caller does not say.
     default_hl: str = "en-US"
 
-    # How the DataForSEO client insists: `default_retries` attempts, sleeping
-    # `default_backoff * attempt` seconds between them (linear), on 5xx, 429,
-    # timeouts, network errors and 5xxxx task codes. Worst case with the
-    # defaults: 3 attempts and 2 + 4 = 6 seconds of waiting. Client-side errors
-    # (4xx, 4xxxx task codes) are never retried. See
-    # app/clients/dataforseo_client.py::_run_with_retry.
-    default_retries: int = 3
+    # Tentativas e espera: os mesmos números nos quatro coletores, e a mesma
+    # política (app/utils/retry.py) -- repete 408, 429, 5xx, timeout, erro de
+    # rede e tarefa 5xxxx, em progressão exponencial com jitter e teto de 60s,
+    # obedecendo Retry-After; nunca repete os outros 4xx nem tarefa 4xxxx.
+    #
+    # Não há `default_timeout` aqui, ao contrário dos outros três. A chamada ao
+    # vivo do Google Ads é COBRADA, e um corte do lado de cá não desfaz a
+    # cobrança: a tarefa continua lá, paga, e a repetição paga de novo. Um
+    # keywords_for_keywords já levou 120s; um corte em 60s, o valor dos outros
+    # coletores, pagaria essas chamadas duas vezes ou mais. O 408/504 que a
+    # própria DataForSEO devolve continua sendo repetido.
+    default_retries: int = 5
     default_backoff: int = 2
 
     # DataForSEO Google Ads credentials (login and API password, from the

@@ -89,24 +89,25 @@ class TestSearchVolumeEndpoint:
             app.dependency_overrides.clear()
 
     @patch("app.clients.dataforseo_client.DataForSEOClient.search_volume")
-    def test_rate_limit_returns_429(self, mock_client: MagicMock) -> None:
+    def test_rate_limit_returns_503(self, mock_client: MagicMock) -> None:
+        """429 esgotado é a fonte ocupada: 503, como nos outros coletores."""
         _override_session(_mock_session())
         mock_client.side_effect = DataForSEORateLimitError("rate limited")
         try:
             client = TestClient(app)
             response = client.post("/search-volume", json={"location": "ES", "keywords": ["air fryer"]})
-            assert response.status_code == 429
+            assert response.status_code == 503
         finally:
             app.dependency_overrides.clear()
 
     @patch("app.clients.dataforseo_client.DataForSEOClient.search_volume")
-    def test_timeout_returns_504(self, mock_client: MagicMock) -> None:
+    def test_timeout_returns_503(self, mock_client: MagicMock) -> None:
         _override_session(_mock_session())
         mock_client.side_effect = DataForSEOTimeoutError("timeout")
         try:
             client = TestClient(app)
             response = client.post("/search-volume", json={"location": "ES", "keywords": ["air fryer"]})
-            assert response.status_code == 504
+            assert response.status_code == 503
         finally:
             app.dependency_overrides.clear()
 

@@ -126,7 +126,8 @@ class StoredSearchVolumeItem(BaseModel):
 class StoredSearchVolumeData(BaseModel):
     location: str
     requested: list[str]
-    # The terms with nothing stored for this location. This is the actionable
+    # The terms DataForSEO never answered for in this location, or whose last
+    # answer is past `stale_after_days`. This is the actionable
     # half of the answer: it is exactly what a collection still needs, and
     # working it out from the gap between what was asked and what came back is
     # the kind of derivation every caller would get subtly wrong (the match is

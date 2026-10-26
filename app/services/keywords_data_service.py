@@ -7,6 +7,7 @@ from app.clients.dataforseo_client import DataForSEOClient
 from app.core.logging import logger
 from app.domain.enums import IngestionStatus, KeywordEndpoint
 from app.repositories.ingestion_run_repository import IngestionRunRepository
+from app.repositories.keyword_check_repository import KeywordCheckRepository
 from app.repositories.keyword_related_repository import KeywordRelatedRepository
 from app.repositories.keyword_search_volume_repository import KeywordSearchVolumeRepository
 from app.repositories.raw_api_response_repository import RawApiResponseRepository
@@ -43,6 +44,7 @@ class KeywordsDataService:
         self._raw_response_repo = RawApiResponseRepository(session)
         self._sv_repo = KeywordSearchVolumeRepository(session)
         self._kr_repo = KeywordRelatedRepository(session)
+        self._check_repo = KeywordCheckRepository(session)
 
     async def collect_search_volume(self, request: SearchVolumeRequest) -> SearchVolumeResponse:
         endpoint = KeywordEndpoint.SEARCH_VOLUME
@@ -94,6 +96,13 @@ class KeywordsDataService:
                 location=request.location,
                 language=request.language,
                 records=records,
+            )
+            # Todo termo pedido teve resposta -- inclusive o que voltou sem
+            # linha, porque o Google Ads não tem volume para ele. É a mesma
+            # regra de verificação dos outros coletores: sem isto, esse termo
+            # ficava em `missing` para sempre e era cobrado a cada análise.
+            await self._check_repo.record(
+                trend_request_id=trend_req.id, location=request.location, keywords=request.keywords
             )
             exec_time = elapsed_ms(start)
             await self._ingestion_repo.mark_success(run, exec_time)
@@ -286,8 +295,14 @@ class KeywordsDataService:
         stores (a curated term with capitals looks missing forever and is
         re-downloaded every run, at real cost per call), and age counts as
         missing -- see `stale_after_days`.
+
+        `missing` é lido das VERIFICAÇÕES, não das linhas guardadas -- a mesma
+        regra dos outros coletores. Um termo para o qual o Google Ads respondeu
+        "não tenho volume" não deixa linha, e lido das linhas ficava faltando
+        para sempre, cobrado de novo a cada análise.
         """
         rows = await self._sv_repo.latest_by_keywords(location=request.location, keywords=request.keywords)
+        checks = await self._check_repo.last_checks(location=request.location, keywords=request.keywords)
         # Vencido conta como faltando. Antes `missing` era só "nunca coletado",
         # e como quem chama só monta uma coleta para o que está em `missing`, um
         # volume de busca baixado uma vez valia para sempre -- janeiro sendo lido
@@ -298,7 +313,7 @@ class KeywordsDataService:
         # querer o último valor conhecido enquanto a coleta não termina. O que
         # muda é o pedido de coleta, não o que se sabe.
         corte = stale_cutoff(request.stale_after_days) if request.stale_after_days else None
-        frescos = {row.keyword.strip().lower() for row in rows if corte is None or row.created_at >= corte}
+        frescos = {termo for termo, checked_at in checks.items() if corte is None or checked_at >= corte}
         missing = [k for k in request.keywords if k.strip().lower() not in frescos]
 
         return StoredSearchVolumeResponse(

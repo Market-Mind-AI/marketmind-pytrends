@@ -40,8 +40,15 @@ record every collection still writes to.
 | `POST` | `/stored/search-volume` | Read what is already stored for these keywords, and which are `missing` (optionally with `stale_after_days`). Nothing is fetched or billed. |
 | `GET` | `/stored/related` | Read the related keywords stored for one `seed_keyword` in one `location`. Nothing is fetched or billed. |
 
-Collection errors map to `429` (DataForSEO rate limit), `504` (timeout) and
-`502` (anything else DataForSEO refused).
+Collection errors map to `503` when DataForSEO (or Google behind it) stayed down
+through every attempt -- 429, timeouts and 5xx included, the same status every
+MarketMind collector uses -- and `502` when it refused the request.
+
+`missing` is read from the keyword checks (`keyword_checks`): one row per
+(country, keyword) DataForSEO answered, kept current on every successful
+collection. A keyword Google Ads has no volume for comes back without a row but
+still counts as answered, so it is not billed again on every run -- the same
+rule for a "no data" answer as in the indicator collectors.
 
 ```bash
 curl -X POST http://localhost:8000/search-volume \
@@ -74,10 +81,16 @@ analysis's trace.
 
 - **Sandbox by default in code** (`DATAFORSEO_USE_SANDBOX=true`): same auth and
   shapes, mock data, never billed. Every deployment sets it to `false`.
-- **Retries**: `DEFAULT_RETRIES` (3) attempts with linear backoff
-  (`DEFAULT_BACKOFF` x attempt seconds) on HTTP 5xx, 429, timeouts, network
-  errors and transient `5xxxx` task codes. Client errors (4xx, `4xxxx`) fail
-  at once.
+- **Retries** (`app/utils/retry.py`, the same in every collector):
+  `DEFAULT_RETRIES` (5) attempts on 408, 429, 5xx, timeouts, network errors
+  and transient `5xxxx` task codes, waiting `DEFAULT_BACKOFF` seconds doubled
+  per attempt, with jitter, capped at 60 s; `Retry-After` is honoured up to the
+  same cap. Other 4xx and `4xxxx` fail at once.
+- **No client-side timeout**, unlike the other collectors' `DEFAULT_TIMEOUT`:
+  a live call is billed whether or not this side gives up on it, and a
+  keywords-for-keywords call has taken 120 s, so a cut-off would pay for the
+  same call twice.
+- **Timestamps**: timezone-aware UTC everywhere (`app/utils/time.py`).
 - **The SDK is synchronous**, so the service runs each call in a worker thread
   (`asyncio.to_thread`). Without that a 120 s keywords-for-keywords call
   blocked the event loop, `/health` stopped answering and the liveness probe
@@ -113,8 +126,8 @@ scripts/              # verify_dataforseo_locations.py, run by hand
 | `DATABASE_HOST` / `PORT` / `NAME` / `USER` / `PASSWORD` | `localhost` / `5432` / `marketmind_pytrends` / `marketmind` / … | |
 | `DATABASE_SSL_MODE` | `disable` | `require` at least on Azure. |
 | `DEFAULT_HL` | `en-US` | Language when the request names none. |
-| `DEFAULT_RETRIES` | `3` | |
-| `DEFAULT_BACKOFF` | `2` | Seconds, times the attempt number. |
+| `DEFAULT_RETRIES` | `5` | Attempts per call, same in every collector. |
+| `DEFAULT_BACKOFF` | `2` | First wait (seconds); doubles per attempt, with jitter, capped at 60 s. |
 | `DATAFORSEO_LOGIN` / `DATAFORSEO_PASSWORD` | `` | API password, not the account password. |
 | `DATAFORSEO_USE_SANDBOX` | `true` | `false` in every deployment. |
 | `LOG_LEVEL` | `INFO` | |

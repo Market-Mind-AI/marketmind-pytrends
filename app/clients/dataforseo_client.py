@@ -33,9 +33,11 @@ from app.core.exceptions import (
     DataForSEOClientError,
     DataForSEORateLimitError,
     DataForSEOTimeoutError,
+    DataForSEOTransientError,
     DataForSEOTransientTaskError,
 )
 from app.core.logging import logger
+from app.utils.retry import backoff_seconds, is_retryable_status
 
 _SANDBOX_HOST = "https://sandbox.dataforseo.com"
 # DataForSEO status codes are 20000-series for success, 40000+ for errors —
@@ -48,10 +50,6 @@ _TASK_ERROR_THRESHOLD = 40000
 _TASK_SERVER_ERROR_THRESHOLD = 50000
 _RATE_LIMIT_STATUS = 429
 _TIMEOUT_STATUSES = frozenset({408, 504})
-# Transient upstream/gateway errors worth retrying (DataForSEO returns 502 Bad
-# Gateway under load — a burst of live calls across many countries triggers it).
-# Retried with linear backoff before surfacing as an error (2026-07-15).
-_TRANSIENT_STATUSES = frozenset({500, 502, 503, 504})
 
 SEARCH_VOLUME_ENDPOINT = "google_ads_search_volume_live"
 KEYWORDS_FOR_KEYWORDS_ENDPOINT = "google_ads_keywords_for_keywords_live"
@@ -218,68 +216,54 @@ class DataForSEOClient:
             username=settings.dataforseo_login, password=settings.dataforseo_password, host=host
         )
 
-    def _translate_api_exception(self, exc: ApiException, label: str) -> DataForSEOClientError:
-        status = getattr(exc, "status", None)
+    def _transient_error(self, status: int | None, exc: Exception, label: str) -> DataForSEOTransientError:
         if status == _RATE_LIMIT_STATUS:
             return DataForSEORateLimitError(f"DataForSEO rate-limited request for {label}: {exc}")
         if status in _TIMEOUT_STATUSES:
             return DataForSEOTimeoutError(f"DataForSEO timed out for {label}: {exc}")
-        return DataForSEOClientError(f"DataForSEO API error for {label}: {exc}")
+        return DataForSEOTransientError(f"DataForSEO server error for {label}: {exc}")
 
     def _run_with_retry(self, call: Any, label: str) -> Any:
-        """Run a DataForSEO API call, retrying transient upstream failures
-        (502/503/504/500, timeouts, 429) with linear backoff. A burst of live
-        calls across many countries makes DataForSEO's gateway return 502s;
-        without this a single 502 aborts a whole MarketMind analysis (core has
-        an all-or-nothing completeness gate). Non-transient errors are
-        translated and raised immediately."""
-        last_exc: ApiException | None = None
-        for attempt in range(1, settings.default_retries + 1):
+        """Uma chamada à DataForSEO, insistindo enquanto a falha for passageira.
+
+        Quando e quanto insistir é a política comum aos quatro coletores, em
+        app/utils/retry.py: 408, 429, 5xx, timeout e erro de rede são repetidos,
+        em progressão exponencial com jitter, obedecendo Retry-After; os outros
+        4xx nunca. A tarefa que volta 200 com código 5xxxx (ex.: 50301, o OAuth
+        do Google devolvendo 503) é a mesma queda passageira, só que dentro do
+        corpo, e é repetida igual; a 4xxxx é recusa e sobe na hora.
+
+        Os erros de rede (DNS, conexão derrubada, pool esgotado) chegam como
+        exceções cruas do urllib3/socket, não como ApiException -- um único
+        "Failed to resolve api.dataforseo.com" já derrubou um país inteiro sem
+        nenhuma repetição. Por isso têm cláusula própria.
+
+        Esgotadas as tentativas, a falha passageira sobe como
+        DataForSEOTransientError (503): a fonte está fora, vale insistir depois.
+        """
+        attempts = settings.default_retries
+        last_error: DataForSEOTransientError | None = None
+        for attempt in range(1, attempts + 1):
+            retry_after: str | None = None
             try:
                 return call()
             except ApiException as exc:
                 status = getattr(exc, "status", None)
-                transient = (
-                    status in _TRANSIENT_STATUSES or status == _RATE_LIMIT_STATUS or status in _TIMEOUT_STATUSES
-                )
-                if not transient or attempt == settings.default_retries:
-                    raise self._translate_api_exception(exc, label) from exc
-                last_exc = exc
-                logger.warning(
-                    f"DataForSEO transient error (status={status}) for {label}; "
-                    f"retry {attempt}/{settings.default_retries}"
-                )
-                time.sleep(settings.default_backoff * attempt)
+                if not is_retryable_status(status):
+                    raise DataForSEOClientError(f"DataForSEO API error for {label}: {exc}") from exc
+                last_error = self._transient_error(status, exc, label)
+                retry_after = (getattr(exc, "headers", None) or {}).get("Retry-After")
             except (urllib3.exceptions.HTTPError, ConnectionError, TimeoutError, OSError) as exc:
-                # Network-level failures (DNS resolution, connection reset, pool
-                # timeouts) surface as raw urllib3/socket errors, NOT ApiException,
-                # so the clause above never caught them — a single DNS blip
-                # ('Failed to resolve api.dataforseo.com') killed a whole country
-                # with zero retries and aborted the analysis. These are ALWAYS
-                # transient: retry with the same linear backoff so the collector
-                # self-heals instead of failing loudly (system-resilience premise).
-                if attempt == settings.default_retries:
-                    raise DataForSEOClientError(
-                        f"DataForSEO network error for {label} after {attempt} attempts: {exc}"
-                    ) from exc
-                logger.warning(
-                    f"DataForSEO network error for {label}; retry {attempt}/{settings.default_retries}: {exc}"
-                )
-                time.sleep(settings.default_backoff * attempt)
+                last_error = DataForSEOTransientError(f"DataForSEO network error for {label}: {exc}")
             except DataForSEOTransientTaskError as exc:
-                # HTTP 200 but the task failed with a 5xxxx server-side code
-                # (e.g. 50301 — Google OAuth 503). Same transient treatment: a
-                # single upstream blip must not abort the whole analysis.
-                if attempt == settings.default_retries:
-                    raise DataForSEOClientError(
-                        f"DataForSEO task failed for {label} after {attempt} attempts: {exc}"
-                    ) from exc
-                logger.warning(
-                    f"DataForSEO transient task error for {label}; "
-                    f"retry {attempt}/{settings.default_retries}: {exc}"
-                )
-                time.sleep(settings.default_backoff * attempt)
-        raise self._translate_api_exception(last_exc, label)  # pragma: no cover — loop always returns/raises above
+                last_error = exc
+
+            logger.warning(f"DataForSEO attempt {attempt}/{attempts} failed for {label}: {last_error}")
+            if attempt < attempts:
+                time.sleep(backoff_seconds(attempt, retry_after))
+
+        error = last_error or DataForSEOTransientError(f"DataForSEO failed for {label}")
+        raise type(error)(f"{error} (after {attempts} attempts)") from error
 
     def _extract_results(self, response: Any, label: str) -> list[Any]:
         tasks = response.tasks or []

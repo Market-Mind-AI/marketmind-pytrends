@@ -3,11 +3,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.api.dependencies import get_keywords_data_service
-from app.core.exceptions import (
-    DataForSEOClientError,
-    DataForSEORateLimitError,
-    DataForSEOTimeoutError,
-)
+from app.core.exceptions import DataForSEOClientError, DataForSEOTransientError
 from app.schemas.requests import KeywordsForKeywordsRequest, SearchVolumeRequest, StoredSearchVolumeRequest
 from app.schemas.responses import (
     ErrorResponse,
@@ -23,10 +19,25 @@ from app.services.keywords_data_service import KeywordsDataService
 router = APIRouter()
 
 
+def _handle_exception(e: Exception) -> HTTPException:
+    """O status HTTP de cada erro, o mesmo dos outros coletores:
+
+    - 503: a DataForSEO (ou o Google atrás dela) fora do ar depois de todas as
+      tentativas -- 429, timeout e 5xx esgotados incluídos. Vale insistir;
+    - 502: a DataForSEO respondeu algo que não serve.
+
+    Até 26/10/2026 eram 429, 504 e 502 conforme a causa, para a mesma situação
+    que os outros coletores chamam de 503.
+    """
+    if isinstance(e, DataForSEOTransientError):
+        return HTTPException(status_code=503, detail=str(e))
+    return HTTPException(status_code=502, detail=str(e))
+
+
 @router.post(
     "/search-volume",
     response_model=SearchVolumeResponse,
-    responses={429: {"model": ErrorResponse}, 502: {"model": ErrorResponse}, 504: {"model": ErrorResponse}},
+    responses={502: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
     summary="Collect Google Ads Search Volume",
     description="Fetches Google Ads average monthly search volume, competition and CPC for up to 1000 keywords "
     "at one location via DataForSEO, and persists it.",
@@ -37,18 +48,14 @@ async def search_volume(
 ) -> SearchVolumeResponse:
     try:
         return await service.collect_search_volume(request)
-    except DataForSEORateLimitError as e:
-        raise HTTPException(status_code=429, detail=str(e))
-    except DataForSEOTimeoutError as e:
-        raise HTTPException(status_code=504, detail=str(e))
-    except DataForSEOClientError as e:
-        raise HTTPException(status_code=502, detail=str(e))
+    except (DataForSEOClientError, DataForSEOTransientError) as e:
+        raise _handle_exception(e) from e
 
 
 @router.post(
     "/keywords-for-keywords",
     response_model=KeywordsForKeywordsResponse,
-    responses={429: {"model": ErrorResponse}, 502: {"model": ErrorResponse}, 504: {"model": ErrorResponse}},
+    responses={502: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
     summary="Collect Google Ads Keywords-for-Keywords",
     description="Expands up to 20 seed keywords into related keywords with Google Ads metrics via DataForSEO, "
     "and persists them.",
@@ -59,12 +66,8 @@ async def keywords_for_keywords(
 ) -> KeywordsForKeywordsResponse:
     try:
         return await service.collect_keywords_for_keywords(request)
-    except DataForSEORateLimitError as e:
-        raise HTTPException(status_code=429, detail=str(e))
-    except DataForSEOTimeoutError as e:
-        raise HTTPException(status_code=504, detail=str(e))
-    except DataForSEOClientError as e:
-        raise HTTPException(status_code=502, detail=str(e))
+    except (DataForSEOClientError, DataForSEOTransientError) as e:
+        raise _handle_exception(e) from e
 
 
 @router.get(
@@ -110,10 +113,12 @@ async def get_ingestion_run(
         "one row per keyword, the most recently collected one. Nothing is "
         "fetched from DataForSEO and nothing is billed.\n\n"
         "`missing` is the actionable half of the answer: exactly what a "
-        "collection still needs. A keyword is missing when nothing is stored "
-        "for it OR when `stale_after_days` is given and what is stored is older "
-        "than that. Without that field nothing expires, which is how this "
-        "started: a search volume collected once was read as true forever.\n\n"
+        "collection still needs. A keyword is missing when DataForSEO never "
+        "answered for it here OR when `stale_after_days` is given and its last "
+        "answer is older than that. An answer with no row for the keyword -- "
+        "Google Ads has no volume for it -- still counts as answered, so the "
+        "term is not billed again on every run. Without `stale_after_days` "
+        "nothing expires.\n\n"
         "It is computed here rather than left to the caller because the match "
         "is case-insensitive -- DataForSEO lowercases what it stores, so a "
         "curated term written with capitals would look missing forever and be "

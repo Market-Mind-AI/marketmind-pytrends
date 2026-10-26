@@ -45,10 +45,21 @@ def _related_row(keyword: str, seed: str = "air fryer") -> SimpleNamespace:
     )
 
 
-def _service(mock_session: AsyncMock, *, volumes: list | None = None, related: list | None = None):
+def _service(
+    mock_session: AsyncMock,
+    *,
+    volumes: list | None = None,
+    related: list | None = None,
+    checks: dict | None = None,
+):
+    """Sem `checks`, cada linha guardada conta como verificada na data em que
+    foi coletada -- é o que a migração 008 grava para o que já existia."""
     service = KeywordsDataService(mock_session)
     service._sv_repo.latest_by_keywords = AsyncMock(return_value=volumes or [])
     service._kr_repo.latest_by_seed = AsyncMock(return_value=related or [])
+    if checks is None:
+        checks = {row.keyword.lower(): row.created_at for row in volumes or []}
+    service._check_repo.last_checks = AsyncMock(return_value=checks)
     return service
 
 
@@ -184,3 +195,61 @@ async def test_without_a_deadline_nothing_expires(mock_session: AsyncMock) -> No
     response = await service.read_stored_search_volume(StoredSearchVolumeRequest(location="ES", keywords=["air fryer"]))
 
     assert response.data.missing == []
+
+
+async def test_a_term_google_ads_answered_without_a_row_is_not_missing(mock_session: AsyncMock) -> None:
+    """O Google Ads não tem volume para todo termo, e a resposta vem sem linha
+    para ele. Lido das linhas, esse termo ficava em `missing` para sempre e era
+    cobrado a cada análise. A resposta conta como verificação."""
+    service = _service(mock_session, volumes=[], checks={"freidora de aire": _agora_menos(3)})
+
+    response = await service.read_stored_search_volume(
+        StoredSearchVolumeRequest(location="ES", keywords=["Freidora de Aire"], stale_after_days=30)
+    )
+
+    assert response.data.missing == []
+    assert response.data.keywords == []
+
+
+async def test_an_old_answer_without_a_row_expires_like_any_other(mock_session: AsyncMock) -> None:
+    service = _service(mock_session, volumes=[], checks={"freidora de aire": _agora_menos(45)})
+
+    response = await service.read_stored_search_volume(
+        StoredSearchVolumeRequest(location="ES", keywords=["freidora de aire"], stale_after_days=30)
+    )
+
+    assert response.data.missing == ["freidora de aire"]
+
+
+async def test_a_collection_records_a_check_for_every_keyword_asked(mock_session: AsyncMock) -> None:
+    """Inclusive o que voltou sem linha. Uma coleta que falhou não registra."""
+    from app.schemas.requests import SearchVolumeRequest
+
+    service = KeywordsDataService(mock_session)
+    service._client.search_volume = lambda **kwargs: ([{"keyword": "air fryer"}], {})  # type: ignore[method-assign]
+    service._sv_repo.bulk_create = AsyncMock()
+    service._raw_response_repo.create = AsyncMock()
+    service._check_repo.record = AsyncMock()
+
+    await service.collect_search_volume(SearchVolumeRequest(location="ES", keywords=["air fryer", "sin volumen"]))
+
+    assert service._check_repo.record.await_args.kwargs["keywords"] == ["air fryer", "sin volumen"]
+
+
+async def test_a_failed_collection_records_no_check(mock_session: AsyncMock) -> None:
+    import pytest
+
+    from app.core.exceptions import DataForSEOTransientError
+    from app.schemas.requests import SearchVolumeRequest
+
+    def _down(**kwargs: object) -> None:
+        raise DataForSEOTransientError("down")
+
+    service = KeywordsDataService(mock_session)
+    service._client.search_volume = _down  # type: ignore[method-assign]
+    service._check_repo.record = AsyncMock()
+
+    with pytest.raises(DataForSEOTransientError):
+        await service.collect_search_volume(SearchVolumeRequest(location="ES", keywords=["air fryer"]))
+
+    service._check_repo.record.assert_not_awaited()

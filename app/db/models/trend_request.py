@@ -6,6 +6,7 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
+from app.utils.time import utc_now
 
 
 class TrendRequest(Base):
@@ -20,7 +21,7 @@ class TrendRequest(Base):
     language: Mapped[str | None] = mapped_column(nullable=True)
     timeframe: Mapped[str | None] = mapped_column(nullable=True)
     endpoint: Mapped[str] = mapped_column(nullable=False)
-    created_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(nullable=False, default=utc_now)
 
     ingestion_run: Mapped["IngestionRun"] = relationship(back_populates="trend_requests")  # type: ignore[name-defined]  # noqa: F821
     raw_api_responses: Mapped[list["RawApiResponse"]] = relationship(back_populates="trend_request")  # type: ignore[name-defined]  # noqa: F821
