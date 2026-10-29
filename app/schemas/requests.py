@@ -80,7 +80,7 @@ class StoredSearchVolumeRequest(BaseModel):
     )
     # Sem padrão de 90 dias, ao contrário dos coletores de indicadores: lá o
     # dado sai uma vez por ano, aqui o volume de busca muda todo mês, e quem
-    # pergunta sempre diz a janela (o Core manda `demand_stale_after_days`, 30).
+    # pergunta sempre diz a janela (o Core manda `demand_stale_after_days`).
     stale_after_days: int | None = Field(
         None,
         ge=1,

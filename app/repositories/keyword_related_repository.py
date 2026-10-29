@@ -52,12 +52,26 @@ class KeywordRelatedRepository:
         One row per related keyword, most recently collected. The table keeps
         every collection, so without DISTINCT ON a keyword returned by three
         runs reaches the caller three times and is counted three times.
+
+        Read from the latest collection of this seed only. Sorting every
+        collection ever made to pick the freshest row per keyword meant
+        sorting 70 thousand rows of monthly series for the air fryer in the
+        US — 11.8 seconds, several times per analysis (29/10/2026). The latest
+        collection IS the freshest answer for every keyword it returned, and a
+        keyword Google stopped returning is one it no longer relates.
         """
         keyword = KeywordRelated.keyword
-        stmt = (
-            select(KeywordRelated)
+        ultima = (
+            select(KeywordRelated.trend_request_id)
             .where(KeywordRelated.location == location)
             .where(KeywordRelated.seed_keyword == seed_keyword)
+            .order_by(KeywordRelated.created_at.desc())
+            .limit(1)
+            .scalar_subquery()
+        )
+        stmt = (
+            select(KeywordRelated)
+            .where(KeywordRelated.trend_request_id == ultima)
             .distinct(keyword)
             .order_by(keyword, KeywordRelated.created_at.desc())
         )
