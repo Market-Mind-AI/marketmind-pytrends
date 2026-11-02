@@ -91,24 +91,30 @@ async def test_a_direct_sync_call_would_starve_the_loop() -> None:
 
 
 async def test_service_awaits_its_client_through_a_thread() -> None:
-    """Structural check on the call sites.
+    """Both sources are synchronous, and both must run in a worker thread: a
+    call made straight from the coroutine blocks the loop for the whole round
+    trip, liveness probe included. Since 02/11/2026 the service asks Google
+    Ads first and DataForSEO when it fails, so both paths are exercised."""
+    from unittest.mock import MagicMock, patch
 
-    Behavioural coverage would need the DataForSEO SDK stubbed and a database;
-    what actually regressed is the shape of two lines, so this asserts on the
-    source: every call into the synchronous client from the service must go
-    through asyncio.to_thread.
-    """
-    import inspect
-    import re
+    from app.core.exceptions import GoogleAdsTransientError
+    from app.services.keywords_data_service import KeywordsDataService
 
-    from app.services import keywords_data_service
+    servico = KeywordsDataService(MagicMock())
+    servico._google_ads = MagicMock()
+    servico._client = MagicMock()
+    servico._google_ads.search_volume.side_effect = GoogleAdsTransientError("503")
+    servico._client.search_volume.return_value = ([], {})
+    chamadas: list[object] = []
 
-    src = inspect.getsource(keywords_data_service)
+    async def _to_thread(func, /, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003, ANN202
+        chamadas.append(func)
+        return func(*args, **kwargs)
 
-    direct = re.findall(r"(?<!asyncio\.to_thread\(\n\s{16})self\._client\.(\w+)\(", src)
-    assert not direct, f"these client calls bypass asyncio.to_thread and will block the loop: {direct}"
+    with (
+        patch("app.clients.google_ads_client.configured", return_value=True),
+        patch("app.services.keywords_data_service.asyncio.to_thread", _to_thread),
+    ):
+        await servico._first_answer("search_volume", keywords=["x"], country="ES", language="es")
 
-    threaded = re.findall(r"asyncio\.to_thread\(\s*\n\s*self\._client\.(\w+),", src)
-    assert set(threaded) == {"search_volume", "keywords_for_keywords"}, (
-        f"expected both client methods to run in a thread, found {sorted(threaded)}"
-    )
+    assert chamadas == [servico._google_ads.search_volume, servico._client.search_volume]

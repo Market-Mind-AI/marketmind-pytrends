@@ -29,3 +29,14 @@ class DataForSEOTransientTaskError(DataForSEOTransientError):
     returns 503. Distinct from client-side task errors (4xxxx, permanent) so the
     retry loop can retry these transient upstream failures instead of aborting a
     whole analysis on a single blip."""
+
+
+class GoogleAdsClientError(Exception):
+    """A Google Ads API respondeu e a resposta não serve: 4xx, país ou idioma
+    que ela não segmenta, refresh token recusado. Não se repete -- mas a
+    DataForSEO ainda é perguntada no lugar dela."""
+
+
+class GoogleAdsTransientError(Exception):
+    """A Google Ads API ficou ocupada ou fora do ar depois das tentativas.
+    Também passa a vez para a DataForSEO."""

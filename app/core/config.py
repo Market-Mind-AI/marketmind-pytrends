@@ -47,6 +47,24 @@ class Settings(BaseSettings):
     dataforseo_password: str = ""
     dataforseo_use_sandbox: bool = True
 
+    # Google Ads API, asked FIRST for both endpoints; DataForSEO is the last
+    # resort, when this one is not configured or does not answer. Same numbers
+    # (it is the source DataForSEO resells), not billed per call, and about
+    # twenty times faster — see app/clients/google_ads_client.py. Empty
+    # credentials skip it. The customer is the account the Keyword Planner is
+    # asked through; a manager account works.
+    google_ads_developer_token: str = ""
+    google_ads_client_id: str = ""
+    google_ads_client_secret: str = ""
+    google_ads_refresh_token: str = ""
+    google_ads_customer_id: str = ""
+    google_ads_login_customer_id: str = ""
+    google_ads_api_version: str = "v23"
+    # Few and short: past them DataForSEO answers instead, and a long backoff
+    # here would only make that fallback slower.
+    google_ads_retries: int = 2
+    google_ads_timeout_seconds: float = 60.0
+
     log_level: str = "INFO"
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}

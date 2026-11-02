@@ -3,7 +3,9 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.clients import google_ads_client
 from app.clients.dataforseo_client import DataForSEOClient
+from app.clients.google_ads_client import GoogleAdsClient
 from app.core.logging import logger
 from app.domain.enums import IngestionStatus, KeywordEndpoint
 from app.repositories.ingestion_run_repository import IngestionRunRepository
@@ -39,6 +41,7 @@ class KeywordsDataService:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
         self._client = DataForSEOClient()
+        self._google_ads = GoogleAdsClient()
         self._ingestion_repo = IngestionRunRepository(session)
         self._trend_request_repo = TrendRequestRepository(session)
         self._raw_response_repo = RawApiResponseRepository(session)
@@ -79,8 +82,8 @@ class KeywordsDataService:
             # answer probes while Google takes its time. It is also what makes
             # concurrent collection possible at all — a blocked loop serialises
             # everything regardless of how the caller fans out.
-            records, req_payload = await asyncio.to_thread(
-                self._client.search_volume,
+            records, req_payload = await self._first_answer(
+                "search_volume",
                 keywords=request.keywords,
                 country=request.location,
                 language=request.language,
@@ -134,8 +137,8 @@ class KeywordsDataService:
         try:
             # Same blocking-call problem as search_volume above, and this is the
             # method that actually triggered the kill loop — see the note there.
-            records, req_payload = await asyncio.to_thread(
-                self._client.keywords_for_keywords,
+            records, req_payload = await self._first_answer(
+                "keywords_for_keywords",
                 seed_keywords=request.seed_keywords,
                 country=request.location,
                 language=request.language,
@@ -170,6 +173,24 @@ class KeywordsDataService:
         except Exception as e:
             await self._fail(run, endpoint, seed_label, request.location, start, e)
             raise
+
+    async def _first_answer(self, method: str, **kwargs: Any) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """Google Ads first, DataForSEO only when it does not answer.
+
+        Decisão do usuário em 02/11/2026: a Google Ads API é a fonte, e a
+        DataForSEO fica de resiliência, em último caso. É a mesma fonte -- a
+        DataForSEO revende o Keyword Planner --, então a resposta tem o mesmo
+        número; o que muda é o custo e o tempo. Qualquer falha da primeira
+        passa a vez para a segunda, inclusive a que parece definitiva (um país
+        que ela recusa): quem decide que o termo não tem volume é a última a
+        responder. O `provider` do payload gravado diz qual respondeu.
+        """
+        if google_ads_client.configured():
+            try:
+                return await asyncio.to_thread(getattr(self._google_ads, method), **kwargs)
+            except Exception as exc:  # noqa: BLE001 — any failure here is DataForSEO's turn
+                logger.warning(f"Google Ads did not answer {method} for {kwargs.get('country')}; DataForSEO: {exc}")
+        return await asyncio.to_thread(getattr(self._client, method), **kwargs)
 
     async def get_trend_request(self, trend_request_id: Any) -> dict[str, Any] | None:
         tr = await self._trend_request_repo.get_by_id(trend_request_id)
