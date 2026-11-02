@@ -77,3 +77,13 @@ def test_a_google_ads_keyword_reads_like_a_dataforseo_one() -> None:
             {"year": 2025, "month": 10, "search_volume": 60500},
         ],
     }
+
+
+def test_a_429_waits_as_long_as_google_asks() -> None:
+    """Medido em 02/11/2026: o 429 pede 4 a 5 segundos, e o recuo padrão era
+    menor — a segunda tentativa batia no mesmo limite e a coleta ia para a
+    DataForSEO à toa."""
+    from app.clients.google_ads_client import _espera_pedida
+
+    assert _espera_pedida('"message": "Too many requests. Retry in 5 seconds.",') == "5"
+    assert _espera_pedida("outro erro qualquer") is None

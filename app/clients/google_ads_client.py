@@ -20,6 +20,8 @@ and protobuf for two POSTs.
 """
 
 import json
+import re
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -68,6 +70,33 @@ _CHINES_TRADICIONAL = {"TW", "HK", "MO"}
 _PAISES: dict[str, int] | None = None
 _IDIOMAS: dict[str, int] | None = None
 _TOKEN: tuple[str, float] | None = None
+
+# The Keyword Planner limits requests per second per method on the account
+# ("Requests per service per method", scope ACCOUNT), not calls in flight. An
+# analysis fans out — three countries from the orchestrator, four gaps each
+# from the scoring service — and on 02/11/2026 six calls in the same second
+# drew 429s; capping how many were in flight did not help, eight at once still
+# did. So the STARTS of each method are spaced, process-wide, and the calls may
+# overlap freely once started. A lock and a next-free slot per method, because
+# each call runs in its own worker thread (asyncio.to_thread).
+_RITMO = threading.Lock()
+_PROXIMO: dict[str, float] = {}
+
+
+def _aguardar_vez(metodo: str) -> None:
+    with _RITMO:
+        agora = time.monotonic()
+        vez = max(agora, _PROXIMO.get(metodo, 0.0))
+        _PROXIMO[metodo] = vez + settings.google_ads_min_interval_seconds
+    if vez > agora:
+        time.sleep(vez - agora)
+
+
+def _espera_pedida(detalhe: str) -> str | None:
+    """The wait Google asks for on a 429, in its own words: "Too many requests.
+    Retry in 5 seconds." Waiting less only earns another 429."""
+    achado = re.search(r"Retry in (\d+) seconds?", detalhe)
+    return achado.group(1) if achado else None
 
 
 def configured() -> bool:
@@ -161,6 +190,7 @@ class GoogleAdsClient:
         for attempt in range(1, attempts + 1):
             request = urllib.request.Request(url, json.dumps(payload).encode(), headers)
             retry_after: str | None = None
+            _aguardar_vez(path)
             try:
                 with urllib.request.urlopen(request, timeout=settings.google_ads_timeout_seconds) as r:
                     return json.load(r)
@@ -169,7 +199,7 @@ class GoogleAdsClient:
                 if not is_retryable_status(exc.code):
                     raise GoogleAdsClientError(f"Google Ads API {exc.code} for {label}: {detail}") from exc
                 last = GoogleAdsTransientError(f"Google Ads API {exc.code} for {label}: {detail}")
-                retry_after = exc.headers.get("Retry-After") if exc.headers else None
+                retry_after = (exc.headers.get("Retry-After") if exc.headers else None) or _espera_pedida(detail)
             except (urllib.error.URLError, TimeoutError, OSError) as exc:
                 last = GoogleAdsTransientError(f"Google Ads API unreachable for {label}: {exc}")
             logger.warning(f"Google Ads attempt {attempt}/{attempts} failed for {label}: {last}")

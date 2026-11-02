@@ -60,9 +60,13 @@ class Settings(BaseSettings):
     google_ads_customer_id: str = ""
     google_ads_login_customer_id: str = ""
     google_ads_api_version: str = "v23"
-    # Few and short: past them DataForSEO answers instead, and a long backoff
-    # here would only make that fallback slower.
-    google_ads_retries: int = 2
+    # Past them DataForSEO answers instead. Three, because a 429 asks for a
+    # wait of four or five seconds and the second try can land in the same
+    # window when several analyses run at once.
+    google_ads_retries: int = 3
+    # Seconds between the starts of two calls to the same Keyword Planner
+    # method. See _aguardar_vez in app/clients/google_ads_client.py.
+    google_ads_min_interval_seconds: float = 1.0
     google_ads_timeout_seconds: float = 60.0
 
     log_level: str = "INFO"
